@@ -65,3 +65,30 @@ test("compressor_nine_iron", async (t) => {
   t.tick(0, 1, 0, 5);
   t.eq(data(c).slots[1]?.id ?? "below", "below");
 });
+
+test("machine_chain_crusher_to_sifter", async (t) => {
+  // a crusher above a sifter: gravel goes straight in; the sifter's finds drop out (ground under it)
+  const cr = t.set(0, 3, 0, "nookworks:crusher");
+  const sf = t.set(0, 2, 0, "nookworks:sifter");
+  data(cr).fe = 10000;
+  acceptors.get("nookworks:crusher")(cr, { id: "minecraft:cobblestone", n: 1 });
+  t.tick(0, 3, 0, 7);
+  const s = machines.get("nookworks:sifter").data(t.block(0, 2, 0));
+  t.check(s.slots[0]?.id === "minecraft:gravel" || s.progress > 0, `sifter got ${JSON.stringify(s.slots[0])}`);
+});
+
+test("machine_drops_beside_on_ground", async (t) => {
+  const cr = t.set(0, 1, 0, "nookworks:crusher");
+  t.set(0, 0, 0, "minecraft:stone");
+  data(cr).fe = 10000;
+  acceptors.get("nookworks:crusher")(cr, { id: "minecraft:cobblestone", n: 1 });
+  t.tick(0, 1, 0, 7);
+  t.eq(data(cr).slots[1], null, "output left the crusher");
+});
+
+test("inv_entity_holds_slots", async (t) => {
+  const cr = t.set(0, 1, 0, "nookworks:crusher");
+  acceptors.get("nookworks:crusher")(cr, { id: "minecraft:cobblestone", n: 5 });
+  const { containerOfBlock } = await import("../lib/invent.js");
+  t.eq(containerOfBlock(t.block(0, 1, 0))?.getItem(0)?.amount, 5, "screen shows the input");
+});

@@ -1,6 +1,6 @@
 // Per-block data (what Java keeps in block entities), saved as world dynamic properties.
 // One property per block, "b|<dim>|x,y,z" -> JSON. Cached in memory and written back a little after each change.
-import { world, system, ItemStack } from "@minecraft/server";
+import { world, system, ItemStack, EnchantmentTypes } from "@minecraft/server";
 import { posKey } from "./util.js";
 
 const cache = new Map();
@@ -100,6 +100,14 @@ system.runInterval(() => {
 
 // ---- item stacks <-> plain objects
 
+/** Items that carry data our packed form can't keep (a potion's kind, a written book's pages, a shulker box's
+ * contents...): kept out of anything that stores items as packed data. */
+const UNPACKABLE = /potion|tipped_arrow|written_book|writable_book|filled_map|shulker_box|firework|banner|bundle|goat_horn|suspicious_stew|crossbow|bucket_of|_bucket$|spawn_egg|compass|player_head|decorated_pot|ominous|leather_|wolf_armor|horse_armor/;
+export function packable(stack) {
+  return !!stack && !UNPACKABLE.test(stack.typeId.replace(/^minecraft:(water|lava|milk|powder_snow)_bucket$/, "plain")) &&
+    stack.typeId !== "nookworks:crate" && stack.typeId !== "nookworks:lode_pearl";
+}
+
 export function packItem(stack) {
   if (!stack) return null;
   const o = { id: stack.typeId, n: stack.amount };
@@ -143,7 +151,8 @@ export function unpackItem(o) {
       const en = s.getComponent("minecraft:enchantable");
       for (const [type, level] of o.ench) {
         try {
-          en?.addEnchantment({ type, level });
+          const et = EnchantmentTypes.get(type);
+          if (et) en?.addEnchantment({ type: et, level });
         } catch {}
       }
     }
@@ -165,3 +174,11 @@ export function maxStack(id) {
     return 64;
   }
 }
+
+try {
+  system.beforeEvents.shutdown.subscribe(() => {
+    try {
+      flush();
+    } catch {}
+  });
+} catch {}

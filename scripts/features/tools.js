@@ -4,10 +4,11 @@ import { world, system, ItemStack } from "@minecraft/server";
 import { onAnyBreak } from "../lib/blocks.js";
 import { DIRS, add, blockAt, held, setHeld, isCreative, give, tr, actionbar, safe, setStates, state } from "../lib/util.js";
 import { breakAll, canHarvest } from "./chain_breaking.js";
+import { anchored } from "./decor.js";
 import { setting } from "./settings.js";
 
 // ---- Hammers: 3x3 in the plane facing the player; neighbours no harder than twice the centre + 0.5
-const SPARES = /budding_amethyst|spawner|bedrock|end_portal|barrier|command_block/;
+const SPARES = /budding_amethyst|spawner|bedrock|end_portal|barrier|command_block|shulker_box|furnace|smoker|hopper|dispenser|dropper|brewing|crafter|beacon|lectern|chest|barrel|jukebox|sign/;
 onAnyBreak(({ block, dim, perm, player, item }) => {
   if (!player || !item?.typeId.endsWith("_hammer") || !item.typeId.startsWith("nookworks:")) return;
   if (!setting("hammer") || player.isSneaking) return;
@@ -21,9 +22,12 @@ onAnyBreak(({ block, dim, perm, player, item }) => {
       if (!a && !b) continue;
       const p = plane === "y" ? { x: o.x + a, y: o.y, z: o.z + b } : plane === "x" ? { x: o.x, y: o.y + a, z: o.z + b } : { x: o.x + a, y: o.y + b, z: o.z };
       const nb = blockAt(dim, p);
-      if (!nb || nb.isAir || nb.isLiquid || SPARES.test(nb.typeId)) continue;
+      if (!nb || nb.isAir || nb.isLiquid || SPARES.test(nb.typeId) || nb.typeId.startsWith("nookworks:")) continue;
       if (!nb.hasTag("stone") && !nb.hasTag("metal") && !nb.hasTag("minecraft:is_pickaxe_item_destructible") && !/ore|stone|deepslate|netherrack|basalt|blackstone|tuff|calcite|terracotta|brick|end_stone|obsidian/.test(nb.typeId)) continue;
       if (!canHarvest(nb, item)) continue;
+      try {
+        if (nb.getComponent("minecraft:inventory")) continue; // Java leaves blocks with a block entity
+      } catch {}
       targets.push(p);
     }
   breakAll(player, dim, targets);
@@ -80,6 +84,12 @@ function wand(player, block, face) {
   const perm = block.permutation;
   const type = block.typeId;
   const dim = block.dimension;
+  const st = perm.getAllStates();
+  if (st["nookworks:half"] !== undefined || st["upper_block_bit"] !== undefined || /door|bed$/.test(type)) return;
+  let itemId = type;
+  try {
+    itemId = block.getItemStack(1)?.typeId ?? type;
+  } catch {}
   const axes = dir.y ? [DIRS.north, DIRS.south, DIRS.east, DIRS.west] : dir.x ? [DIRS.up, DIRS.down, DIRS.north, DIRS.south] : [DIRS.up, DIRS.down, DIRS.east, DIRS.west];
   const seen = new Set();
   const queue = [block.location];
@@ -101,7 +111,7 @@ function wand(player, block, face) {
   const inv = player.getComponent("minecraft:inventory").container;
   let placed = 0;
   for (const f of places) {
-    if (!creative && !takeOne(inv, type)) break;
+    if (!creative && !takeOne(inv, itemId)) break;
     f.setPermutation(perm);
     placed++;
   }
@@ -142,7 +152,9 @@ const SIX = ["down", "up", "north", "south", "west", "east"];
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   if (!e.isFirstEvent || e.itemStack?.typeId !== "nookworks:wrench") return;
   const b = e.block;
-  if (/fence|wall|pane|redstone_wire|portal|dice/.test(b.typeId)) return;
+  if (/fence|wall|pane|redstone_wire|portal|dice|door|bed$|chest|mirror|piston|_head$|extension/.test(b.typeId)) return;
+  if (b.permutation.getAllStates()["nookworks:half"] !== undefined || b.permutation.getAllStates()["upper_block_bit"] !== undefined) return;
+  if (e.player.isSneaking && /corrugated_sheet/.test(b.typeId)) return; // sneak + wrench centres a sheet
   const states = b.permutation.getAllStates();
   const key = ["minecraft:cardinal_direction", "minecraft:facing_direction", "facing_direction", "direction", "minecraft:block_face"].find((k) => k in states);
   if (!key) return;
@@ -195,6 +207,15 @@ world.afterEvents.itemUse.subscribe(
     if (!isCreative(player)) setHeld(player, undefined);
     system.runTimeout(() => {
       const lode = blockAt(dim, t);
+      if (anchored(player.dimension.id, player.location) || anchored(t.dim, { x: t.x, y: t.y + 1, z: t.z })) {
+        give(player, (() => {
+          const s = new ItemStack("nookworks:lode_pearl", 1);
+          s.setDynamicProperty("target", raw);
+          s.setLore([`§7${t.x}, ${t.y}, ${t.z}`]);
+          return s;
+        })());
+        return;
+      }
       if (lode && lode.typeId !== "minecraft:lodestone") {
         give(player, new ItemStack("minecraft:ender_pearl", 1));
         return;
@@ -212,6 +233,7 @@ world.beforeEvents.playerInteractWithEntity.subscribe((e) => {
   if (s?.typeId !== "nookworks:mob_bottle" || s.getDynamicProperty("mob")) return;
   const mob = e.target;
   if (NOT_BOTTLED.test(mob.typeId)) return;
+  if (mob.getComponent("minecraft:inventory") || mob.getComponent("minecraft:is_tamed")) return; // their goods and owner would be lost
   const hp = mob.getComponent("minecraft:health");
   if (!hp || (hp.currentValue > hp.effectiveMax / 2 && mob.typeId !== "minecraft:villager_v2")) {
     system.run(() => actionbar(e.player, tr("nookworks.bedrock.mob_bottle_hurt")));

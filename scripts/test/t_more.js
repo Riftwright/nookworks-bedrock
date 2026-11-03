@@ -61,7 +61,8 @@ test("logistics_magnet_chest", async (t) => {
   t.set(0, 1, 0, "nookworks:magnet_chest");
   t.dim.spawnItem(new ItemStack("minecraft:apple", 3), t.at(2.5, 1.5, 0.5));
   t.tick(0, 1, 0);
-  t.eq(store.get(t.block(0, 1, 0)).slots[0]?.n, 3);
+  const { containerOfBlock } = await import("../lib/invent.js");
+  t.eq(containerOfBlock(t.block(0, 1, 0)).getItem(0)?.amount, 3);
 });
 
 test("fluid_pump_to_tank", async (t) => {
@@ -145,7 +146,20 @@ test("barter_needs_piglin", async (t) => {
   const d = machines.get("nookworks:barter_terminal").data(b);
   d.fe = 20000;
   acceptors.get("nookworks:barter_terminal")(b, { id: "minecraft:gold_ingot", n: 3 });
-  t.dim.spawnEntity("minecraft:piglin", t.at(2, 1, 0));
+  for (let i = 0; i < 3; i++) t.dim.spawnEntity("minecraft:piglin", t.at(2, 1, i - 1));
   t.tick(0, 1, 0, 13);
-  t.check(d.slots[0]?.n !== 3, "gold taken");
+  const dd = machines.get("nookworks:barter_terminal").data(t.block(0, 1, 0));
+  t.check(dd.slots[0]?.n !== 3, `gold taken: ${JSON.stringify(dd.slots)} status ${dd.status} piglins ${t.dim.getEntities({ type: "minecraft:piglin", location: t.at(0, 1, 0), maxDistance: 8 }).length}`);
+});
+
+test("loot_crops_by_age", async (t) => {
+  const { roll } = await import("../lib/loot.js");
+  const { DATA } = await import("../generated/data.js");
+  const count = (states) => roll(DATA.blockLoot.onions, { states }).filter((o) => o.id === "nookworks:onion").reduce((s, o) => s + o.n, 0);
+  let young = 0, ripe = 0;
+  for (let i = 0; i < 20; i++) {
+    young += count({ age: 0 });
+    ripe += count({ age: 7 });
+  }
+  t.check(young === 20 && ripe > 40, `onions: young ${young} (want 20), ripe ${ripe} (want >40)`);
 });

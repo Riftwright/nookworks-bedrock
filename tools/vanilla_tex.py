@@ -24,7 +24,7 @@ MANUAL = {
     "block/cobblestone": "cobblestone", "block/stone": "stone", "block/dirt": "dirt",
     "block/flower_pot": "flower_pot", "block/glow_lichen": "glow_lichen", "block/cut_copper": "cut_copper",
     "item/glass_bottle": "potion_bottle_empty", "item/bucket": "bucket_empty", "item/birch_boat": "boat_birch",
-    "item/birch_chest_boat": "chest_boat_birch", "item/lantern": "lantern", "item/soul_lantern": "soul_lantern",
+    "item/birch_chest_boat": "birch_chest_boat", "item/lantern": "lantern", "item/soul_lantern": "soul_lantern",
     "block/oak_log": "log_oak", "block/oak_log_top": "log_oak_top", "block/spruce_log": "log_spruce",
     "block/oak_leaves": "leaves_oak", "block/glass": "glass", "block/white_wool": "wool_colored_white",
     "block/iron_bars": "iron_bars", "block/open_eyeblossom": "eyeblossom_blooming", "block/closed_eyeblossom": "eyeblossom_dormant",

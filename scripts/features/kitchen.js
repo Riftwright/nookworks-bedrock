@@ -2,7 +2,7 @@
 // handle (empty-hand click = one turn, or a Motor).
 import { world, system, ItemStack } from "@minecraft/server";
 import { onBlock, TICK } from "../lib/blocks.js";
-import { defineMachine, putOut, spaceFor } from "../lib/machine.js";
+import { defineMachine, putOut, spaceFor, fits } from "../lib/machine.js";
 import * as store from "../lib/store.js";
 import { packItem, unpackItem, sameItem } from "../lib/store.js";
 import { dropSlots, takeFromSlot, deliverBelow, acceptors } from "../lib/inv.js";
@@ -72,7 +72,13 @@ onBlock("iron_pot", {
       if ((d.liquid && d.liquid !== liq) || d.mb + f[1] > 1000) return actionbar(player, tr("nookworks.bedrock.not_accepted"));
       d.liquid = liq;
       d.mb += f[1];
-      if (!isCreative(player)) setHeld(player, new ItemStack(f[2], 1));
+      if (!isCreative(player)) {
+        if (h.amount > 1) {
+          h.amount--;
+          setHeld(player, h);
+          give(player, new ItemStack(f[2], 1));
+        } else setHeld(player, new ItemStack(f[2], 1));
+      }
       setStates(block, { liquid: liq });
       d.settle = 40;
       store.save(block);
@@ -112,6 +118,7 @@ onBlock("iron_pot", {
       else if (d.items.length < 8) d.items.push(p);
       else return;
       consumeHeld(player);
+      if (h.typeId === "minecraft:milk_bucket") give(player, new ItemStack("minecraft:bucket", 1));
       d.settle = 40;
       d.cook = 0;
       store.save(block);
@@ -270,6 +277,7 @@ holder("plate", 1);
 function handMachine(name, recipe, extraOut) {
   return defineMachine(name, {
     slots: extraOut ? 3 : 2, inputs: [0], outputs: extraOut ? [1, 2] : [1], hopperIn: true,
+    claimsEmpty: (player) => !player.isSneaking, noForm: true, // an empty hand turns the handle; sneaking opens the screen
     accepts: (d, p) => !!recipe(p.id),
     lines: ({ d }) => [tr("nookworks.bedrock.turns", d.progress ?? 0)],
     interact({ block, player, d }) {
@@ -284,7 +292,7 @@ function handMachine(name, recipe, extraOut) {
     const s = d.slots[0];
     const r = s && recipe(s.id);
     if (!r) return false;
-    if (d.slots[1] && !(d.slots[1].id === r.id && d.slots[1].n + r.n <= 64)) return false;
+    if (!fits(d, 1, [{ id: r.id, n: r.n }]) || (r.extra && !fits(d, 2, [{ id: "nookworks:rice_bran", n: 1 }]))) return false;
     d.progress = (d.progress ?? 0) + 1;
     block.dimension.playSound("block.grindstone.use", block.location, { volume: 0.5 });
     if (d.progress >= r.turns) {
@@ -317,6 +325,8 @@ handMachine("rice_polisher", (id) => matches("#c:crops/rice", id) || id === "noo
 defineMachine("oil_press", {
   slots: 2, inputs: [0], outputs: [1],
   tanks: { oil: { cap: 4000, gives: true } },
+  claimsEmpty: (player) => !player.isSneaking,
+  noForm: true,
   accepts: (d, p) => !!dataMapLookup(dm("pressing"), p.id),
   lines: ({ d }) => [tr("nookworks.bedrock.turns", d.progress ?? 0)],
   interact({ block, player, d, spec }) {

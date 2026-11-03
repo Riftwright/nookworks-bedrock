@@ -2,7 +2,7 @@
 // hooks, chimney smoke, mirrors, and the Sort for vanilla chests (docs/java_spec.md §9, §12, §14).
 import { world, system, ItemStack, BlockPermutation } from "@minecraft/server";
 import { ModalFormData } from "@minecraft/server-ui";
-import { onBlock, onAnyBreak } from "../lib/blocks.js";
+import { onBlock, onAnyBreak, onItemTap } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
 import { packItem, unpackItem, sameItem, maxStack } from "../lib/store.js";
 import { DIRS, add, blockAt, held, setHeld, consumeHeld, isCreative, give, tr, actionbar, safe, setStates, state, chance } from "../lib/util.js";
@@ -47,7 +47,16 @@ function growDawnwood(b) {
 }
 onBlock("dawnwood_sapling", {
   randomTick: ({ block }) => {
-    if (chance(3 / 7)) growDawnwood(block);
+    let light = 15;
+    try {
+      light = block.dimension.getLightLevel?.(add(block.location, DIRS.up)) ?? 15;
+    } catch {}
+    if (light < 9 || !chance(3 / 7)) return;
+    const d = store.get(block, () => ({ stage: 0 }));
+    if (!d.stage) {
+      d.stage = 1;
+      store.save(block);
+    } else growDawnwood(block);
   },
   interact: ({ block, player }) => {
     if (held(player)?.typeId !== "minecraft:bone_meal") return;
@@ -96,7 +105,8 @@ world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
 });
 
 // ---- books laid on a block (sneak + a book on a top) and taken back with an empty hand
-const BOOKS = new Set(["minecraft:book", "minecraft:writable_book", "minecraft:written_book", "minecraft:enchanted_book"]);
+// written books keep their pages only in the stack itself, which these blocks can't hold
+const BOOKS = new Set(["minecraft:book", "minecraft:enchanted_book"]);
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   const s = e.itemStack;
   if (!e.isFirstEvent || !e.player.isSneaking || !s || !BOOKS.has(s.typeId) || e.blockFace !== "Up") return;
@@ -165,7 +175,8 @@ onBlock("standing_mirror", {
 
 // ---- Glazed Flower Pot: a flower or sapling goes in, an empty hand takes it out
 const POTTED = Object.keys(DATA.blockStates).filter((k) => k.startsWith("glazed_potted_")).map((k) => k.slice(14));
-const plantItem = (p) => ({ dandelion: "minecraft:dandelion", azalea_bush: "minecraft:azalea", flowering_azalea_bush: "minecraft:flowering_azalea", dawnwood_sapling: "nookworks:dawnwood_sapling", poplar_sapling: "minecraft:poplar_sapling" }[p] ?? `minecraft:${p}`);
+const plantItem = (p) => bedrockId({ dandelion: "minecraft:dandelion", azalea_bush: "minecraft:azalea", flowering_azalea_bush: "minecraft:flowering_azalea", dawnwood_sapling: "nookworks:dawnwood_sapling", poplar_sapling: "minecraft:poplar_sapling" }[p] ?? `minecraft:${p}`);
+import { bedrockId } from "../lib/ids.js";
 onBlock("glazed_flower_pot", {
   interact: ({ block, player }) => {
     const h = held(player);
@@ -189,6 +200,7 @@ onBlock(POTTED.map((p) => `glazed_potted_${p}`), {
 
 // ---- Supports: an axe steps post -> beam -> bracket -> wall post
 const SHAPES = ["post", "beam", "bracket", "wall_post"];
+onItemTap(Object.keys(DATA.blockStates).filter((k) => k.endsWith("_support")), (s) => s.hasTag("minecraft:is_axe"));
 onBlock(Object.keys(DATA.blockStates).filter((k) => k.endsWith("_support")), {
   interact: ({ block, player }) => {
     if (!held(player)?.hasTag("minecraft:is_axe")) return;
@@ -201,7 +213,8 @@ onBlock(Object.keys(DATA.blockStates).filter((k) => k.endsWith("_support")), {
 // ---- Corrugated sheets weather like copper; honeycomb waxes, an axe scrapes back, the wrench (sneak) centres
 const AGES = ["", "exposed_", "weathered_", "oxidized_"];
 const sheetKinds = (k) => /^(waxed_)?(exposed_|weathered_|oxidized_)?(corrugated_sheet|scrap_bale)$/.exec(k);
-const SHEETS = Object.keys(DATA.blockStates).filter((k) => sheetKinds(k));
+const SHEETS = Object.keys(DATA.blockStates).filter((k) => sheetKinds(k) || /^(red|green|blue|white)_corrugated_sheet$/.test(k));
+onItemTap(SHEETS, (s, p) => s.typeId === "minecraft:honeycomb" || s.hasTag("minecraft:is_axe") || (s.typeId === "nookworks:wrench" && p.isSneaking));
 function swapKeep(block, id) {
   const st = block.permutation.getAllStates();
   block.setType(id);
@@ -214,13 +227,14 @@ function swapKeep(block, id) {
 onBlock(SHEETS, {
   randomTick: ({ block }) => {
     const m = sheetKinds(block.typeId.slice(10));
-    if (m[1] || !chance(0.05)) return;
+    if (!m || m[1] || !chance(0.05)) return;
     const age = AGES.indexOf(m[2] ?? "");
     if (age < 3) swapKeep(block, `nookworks:${AGES[age + 1]}${m[3]}`);
   },
   interact: ({ block, player }) => {
-    const m = sheetKinds(block.typeId.slice(10));
+    const m = sheetKinds(block.typeId.slice(10)) ?? [null, null, null, null];
     const h = held(player);
+    if (!m[3] && h?.typeId !== "nookworks:wrench") return;
     if (h?.typeId === "minecraft:honeycomb" && !m[1]) {
       swapKeep(block, `nookworks:waxed_${m[2] ?? ""}${m[3]}`);
       consumeHeld(player);
@@ -273,28 +287,32 @@ world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
       const last = lastSort.get(player.id);
       const desc = last && last.key === `${block.location.x},${block.location.y},${block.location.z}` && system.currentTick - last.t < 40 && !last.desc;
       lastSort.set(player.id, { key: `${block.location.x},${block.location.y},${block.location.z}`, t: system.currentTick, desc });
-      const items = [];
+      // the stacks themselves are moved (nothing rebuilt, so potions, books and boxes keep their data)
+      const stacks = [];
       for (let i = 0; i < c.size; i++) {
         const s = c.getItem(i);
-        if (!s) continue;
-        const p = packItem(s);
-        const same = items.find((x) => sameItem(x, p));
-        if (same) same.n += p.n;
-        else items.push(p);
-        c.setItem(i, undefined);
+        if (s) stacks.push(s);
       }
-      const key = (x) => x.id.replace(/^minecraft:/, "~");
-      items.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-      if (desc) items.reverse();
-      let slot = 0;
-      for (const p of items) {
-        let n = p.n;
-        while (n > 0 && slot < c.size) {
-          const s = unpackItem({ ...p, n });
-          c.setItem(slot++, s);
-          n -= s.amount;
+      const merged = [];
+      for (const s of stacks) {
+        let left = s.amount;
+        for (const m of merged) {
+          if (!left) break;
+          if (m.isStackableWith(s) && m.amount < m.maxAmount) {
+            const k = Math.min(left, m.maxAmount - m.amount);
+            m.amount += k;
+            left -= k;
+          }
+        }
+        if (left) {
+          s.amount = left;
+          merged.push(s);
         }
       }
+      const key = (x) => x.typeId.replace(/^minecraft:/, "~");
+      merged.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : b.amount - a.amount));
+      if (desc) merged.reverse();
+      for (let i = 0; i < c.size; i++) c.setItem(i, merged[i]);
       player.playSound("random.click");
       actionbar(player, tr(desc ? "nookworks.bedrock.sort_desc" : "nookworks.bedrock.sort"));
     }, "chest sort")

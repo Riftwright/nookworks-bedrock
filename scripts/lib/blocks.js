@@ -21,6 +21,26 @@ export function onBlock(names, h) {
   }
 }
 
+/** Blocks that use a tap only with certain items (a hoe on soil, a slab on a slab, an axe on a support...): they
+ * are left out of nookworks:interactive (tools/item_tap_blocks.txt) and reached here instead. */
+export const itemTaps = new Map(); // typeId -> (itemStack, player) => bool
+export function onItemTap(names, pred) {
+  for (const n of [].concat(names)) itemTaps.set(id(n), pred);
+}
+world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
+  if (!e.isFirstEvent) return;
+  const pred = itemTaps.get(e.block.typeId);
+  if (!pred || !e.itemStack || !pred(e.itemStack, e.player)) return;
+  e.cancel = true;
+  const block = e.block, player = e.player, face = e.blockFace;
+  system.run(
+    safe(() => {
+      const h = handlers.get(block.typeId);
+      if (h?.interact) h.interact({ block, player, face });
+    }, "itemTap")
+  );
+});
+
 export function onAnyBreak(fn) {
   breakListeners.push(fn);
 }
@@ -37,15 +57,17 @@ system.beforeEvents.startup.subscribe((ev) => {
       if (h?.tick) h.tick({ block: e.block, dim: e.dimension });
     }, "tick"),
   });
+  ev.blockComponentRegistry.registerCustomComponent("nookworks:interactive", {
+    onPlayerInteract: safe((e) => {
+      const h = handlers.get(e.block.typeId);
+      if (h?.interact && e.player) h.interact({ block: e.block, player: e.player, face: e.face, faceLocation: e.faceLocation });
+    }, "interact"),
+  });
   ev.blockComponentRegistry.registerCustomComponent("nookworks:behavior", {
     onRandomTick: safe((e) => {
       const h = handlers.get(e.block.typeId);
       if (h?.randomTick) h.randomTick({ block: e.block, dim: e.dimension });
     }, "randomTick"),
-    onPlayerInteract: safe((e) => {
-      const h = handlers.get(e.block.typeId);
-      if (h?.interact && e.player) h.interact({ block: e.block, player: e.player, face: e.face, faceLocation: e.faceLocation });
-    }, "interact"),
     onPlace: safe((e) => {
       version++;
       const h = handlers.get(e.block.typeId);
@@ -107,4 +129,39 @@ world.afterEvents.playerPlaceBlock.subscribe(
 
 export function shortId(block) {
   return short(block.typeId);
+}
+
+/** Breaks one of our blocks as a player's mining would (used where an inventory entity covers the block, so the
+ * game's own mining never reaches it): handlers and listeners run, the block's loot drops (none in creative). */
+export function breakByPlayer(block, player) {
+  const perm = block.permutation;
+  const typeId = block.typeId;
+  const dim = block.dimension;
+  const item = player?.getComponent("minecraft:equippable")?.getEquipment("Mainhand");
+  const ctx = { block, dim, perm, player, item, typeId };
+  for (const l of breakListeners) safe(l, "breakListener")(ctx);
+  version++;
+  const h = handlers.get(typeId);
+  if (h?.broken) safe(h.broken, "broken")(ctx);
+  store.remove(block);
+  const { x, y, z } = block.location;
+  let creative = false;
+  try {
+    creative = player?.getGameMode?.() === "Creative" || player?.getGameMode?.() === "creative";
+  } catch {}
+  dim.runCommand(`setblock ${x} ${y} ${z} air${creative ? "" : " destroy"}`);
+}
+
+/** Redstone power reaching a block of ours: Bedrock's getRedstonePower() is undefined for custom blocks, so the
+ * strongest of its six neighbours (a powered block, lever, torch, dust...). */
+export function redstoneIn(block) {
+  let p = 0;
+  for (const d of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+    try {
+      const n = block.dimension.getBlock({ x: block.location.x + d[0], y: block.location.y + d[1], z: block.location.z + d[2] });
+      if (!n) continue;
+      p = Math.max(p, n.getRedstonePower() ?? 0);
+    } catch {}
+  }
+  return p;
 }

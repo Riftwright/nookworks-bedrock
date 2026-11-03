@@ -1,11 +1,27 @@
 // Dawnwood's door, trapdoor, fence gate, button, pressure plate, fence, slab and stairs: what vanilla's own do.
-import { ItemStack } from "@minecraft/server";
-import { onBlock } from "../lib/blocks.js";
+import { ItemStack, world } from "@minecraft/server";
+import { onBlock, onItemTap, onAnyBreak } from "../lib/blocks.js";
 import { DIRS, OPPOSITE, add, blockAt, setStates, state, id, held, consumeHeld, later, isCreative } from "../lib/util.js";
 import { connects, solid, refresh } from "./connect.js";
 
 const W = "dawnwood";
-const sound = (block, s) => block.dimension.playSound(s, block.location);
+const sound = (block, s) => {
+  // an Oil Can silences it (items2.js marks it)
+  if (world.getDynamicProperty(`oil|${block.dimension.id}|${block.location.x},${block.location.y},${block.location.z}`)) return;
+  block.dimension.playSound(s, block.location);
+};
+
+// ---- two-high blocks: one item for the pair (the halves' own loot is empty)
+const TWO_HIGH = new Set(["nookworks:dawnwood_door", "nookworks:daemon_door", "nookworks:if_mirror", "nookworks:standing_mirror", "nookworks:recycler"]);
+onAnyBreak(({ block, dim, perm, player, typeId, explosion }) => {
+  if (!TWO_HIGH.has(typeId) || (player && isCreative(player))) return;
+  if (explosion && perm.getState("nookworks:half") === "upper") return; // a blast takes both: the lower half drops it
+  dim.spawnItem(new ItemStack(typeId, 1), block.center());
+});
+world.afterEvents.blockExplode.subscribe((e) => {
+  const t = e.explodedBlockPermutation.type.id;
+  if (TWO_HIGH.has(t) && e.explodedBlockPermutation.getState("nookworks:half") !== "upper") e.dimension.spawnItem(new ItemStack(t, 1), e.block.center());
+});
 
 // ---- door: two blocks, opened together
 onBlock(`${W}_door`, {
@@ -119,6 +135,7 @@ const FENCES = (nb) => nb && (nb.typeId.endsWith("_fence") || nb.typeId.endsWith
 connects(`${W}_fence`, (b, d, nb) => FENCES(nb) || solid(nb));
 
 // ---- slab: a second slab on a slab makes it whole
+onItemTap(`${W}_slab`, (s) => s.typeId === `nookworks:${W}_slab`);
 onBlock(`${W}_slab`, {
   interact: ({ block, player, face }) => {
     const h = held(player);

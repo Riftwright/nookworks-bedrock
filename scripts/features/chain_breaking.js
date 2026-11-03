@@ -91,10 +91,11 @@ function toolTier(item) {
   return "wooden";
 }
 export function canHarvest(block, item) {
+  // minecraft:<tier>_tier_destructible names the lowest tier that drops it (the older *_pick_diggable tags list
+  // every pickaxe that may dig it, so they say nothing about the least one)
   const t = TIERS.indexOf(toolTier(item));
-  if (block.hasTag("diamond_pick_diggable")) return t >= TIERS.indexOf("diamond");
-  if (block.hasTag("iron_pick_diggable")) return t >= TIERS.indexOf("iron");
-  if (block.hasTag("stone_pick_diggable")) return t >= TIERS.indexOf("stone");
+  for (const need of ["netherite", "diamond", "iron", "copper", "stone"])
+    if (block.hasTag(`minecraft:${need}_tier_destructible`)) return t >= TIERS.indexOf(need);
   return true;
 }
 
@@ -137,52 +138,67 @@ export function breakAll(player, dim, targets) {
 }
 
 onAnyBreak(({ block, dim, perm, player, item, typeId }) => {
+  const wasPlaced = isPlacedLog(dim.id, block.location);
   markPlaced(dim.id, block.location, false);
   if (busy || !player || !item) return;
   const origin = block.location;
   if (LOG.test(typeId) && item.hasTag("minecraft:is_axe") && setting("timber") && !player.isSneaking) {
-    if (isPlacedLog(dim.id, origin)) return;
+    if (wasPlaced) return;
     const logs = search(dim, origin, (b, p) => p.y >= origin.y && b.typeId === typeId && !isPlacedLog(dim.id, p), setting("timberMax"));
     if (!hasNaturalCrown(dim, [origin, ...logs])) return;
     breakAll(player, dim, logs);
-    fastLeafDecay(dim, [origin, ...logs]);
+    if (setting("fastLeafDecay")) fastLeafDecay(dim, [origin, ...logs]);
     rootbound(player, item, dim, origin, typeId);
-  } else if (ORE.test(typeId) && item.hasTag("minecraft:is_pickaxe") && setting("veinMining") && !player.isSneaking) {
+  } else if (ORE.test(typeId) && item.hasTag("minecraft:is_pickaxe") && !item.hasTag("nookworks:hammer") && setting("veinMining") && !player.isSneaking) {
     const fam = family(typeId);
     const ores = search(dim, origin, (b) => ORE.test(b.typeId) && family(b.typeId) === fam && canHarvest(b, item), setting("veinMax"));
     breakAll(player, dim, ores);
+    const xp = { coal: [0, 2], diamond: [3, 7], emerald: [3, 7], lapis: [2, 5], redstone: [1, 5], quartz: [2, 5], nether_gold: [0, 1] };
+    const kind = Object.keys(xp).find((k) => typeId.includes(k));
+    const silk = item.getComponent("minecraft:enchantable")?.getEnchantment("silk_touch");
+    if (kind && !silk && !isCreative(player))
+      for (const o of ores) {
+        const [lo, hi] = xp[kind];
+        for (let n = lo + Math.floor(Math.random() * (hi - lo + 1)); n > 0; n--) dim.spawnEntity("minecraft:xp_orb", { x: o.x + 0.5, y: o.y + 0.5, z: o.z + 0.5 });
+      }
   }
 });
 
 /** A felled tree's leaves (not placed ones) fall within a few seconds, with their drops. */
 function fastLeafDecay(dim, logs) {
-  const leaves = new Map();
-  for (const l of logs)
-    for (let dx = -5; dx <= 5; dx++)
-      for (let dy = -3; dy <= 5; dy++)
-        for (let dz = -5; dz <= 5; dz++) {
-          const p = { x: l.x + dx, y: l.y + dy, z: l.z + dz };
-          const k = `${p.x},${p.y},${p.z}`;
-          if (leaves.has(k)) continue;
-          const b = blockAt(dim, p);
-          if (!b || !/leaves$/.test(b.typeId)) continue;
-          try {
-            if (b.permutation.getState("persistent_bit")) continue;
-          } catch {}
-          leaves.set(k, p);
-        }
-  const list = [...leaves.values()].sort(() => Math.random() - 0.5);
-  let i = 0;
-  const job = system.runInterval(
-    safe(() => {
-      for (let n = 0; n < 6 && i < list.length; n++, i++) {
-        const p = list[i];
-        const b = blockAt(dim, p);
-        if (b && /leaves$/.test(b.typeId) && !nearLog(dim, p)) dim.runCommand(`setblock ${p.x} ${p.y} ${p.z} air destroy`);
+  // found a little at a time (a big tree has tens of thousands of places around it), then dropped a few a tick
+  system.runJob(
+    (function* () {
+      const leaves = [];
+      const seen = new Set();
+      for (const l of logs) {
+        for (let dx = -5; dx <= 5; dx++)
+          for (let dy = -3; dy <= 5; dy++)
+            for (let dz = -5; dz <= 5; dz++) {
+              const p = { x: l.x + dx, y: l.y + dy, z: l.z + dz };
+              const k = `${p.x},${p.y},${p.z}`;
+              if (seen.has(k)) continue;
+              seen.add(k);
+              const b = blockAt(dim, p);
+              if (!b || !/leaves$/.test(b.typeId)) continue;
+              try {
+                if (b.permutation.getState("persistent_bit")) continue;
+              } catch {}
+              leaves.push(p);
+            }
+        yield;
       }
-      if (i >= list.length) system.clearRun(job);
-    }, "leafDecay"),
-    2
+      leaves.sort(() => Math.random() - 0.5);
+      let i = 0;
+      while (i < leaves.length) {
+        for (let n = 0; n < 6 && i < leaves.length; n++, i++) {
+          const p = leaves[i];
+          const b = blockAt(dim, p);
+          if (b && /leaves$/.test(b.typeId) && !nearLog(dim, p)) dim.runCommand(`setblock ${p.x} ${p.y} ${p.z} air destroy`);
+        }
+        for (let w = 0; w < 2; w++) yield;
+      }
+    })()
   );
 }
 

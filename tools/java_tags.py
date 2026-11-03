@@ -29,7 +29,15 @@ class Tags:
               "c:nuggets/iron": ["minecraft:iron_nugget"], "c:nuggets/gold": ["minecraft:gold_nugget"],
               "c:rods/wooden": ["minecraft:stick"], "c:strings": ["minecraft:string"],
               "c:gems/diamond": ["minecraft:diamond"], "c:obsidians": ["minecraft:obsidian"],
-              "c:leathers": ["minecraft:leather"], "c:slime_balls": ["minecraft:slime_ball"]}
+              "c:leathers": ["minecraft:leather"], "c:slime_balls": ["minecraft:slime_ball"],
+              "c:raw_materials/iron": ["minecraft:raw_iron"], "c:raw_materials/gold": ["minecraft:raw_gold"],
+              "c:raw_materials/copper": ["minecraft:raw_copper"], "c:crops/rice": ["nookworks:brown_rice"],
+              "c:foods/raw_fish": ["minecraft:cod", "minecraft:salmon", "minecraft:tropical_fish", "minecraft:pufferfish"],
+              "c:foods/raw_meat": ["minecraft:beef", "minecraft:porkchop", "minecraft:chicken", "minecraft:mutton", "minecraft:rabbit"],
+              "c:ores/iron": ["minecraft:iron_ore", "minecraft:deepslate_iron_ore"], "c:ores/gold": ["minecraft:gold_ore", "minecraft:deepslate_gold_ore", "minecraft:nether_gold_ore"],
+              "c:ores/copper": ["minecraft:copper_ore", "minecraft:deepslate_copper_ore"], "c:ores/coal": ["minecraft:coal_ore", "minecraft:deepslate_coal_ore"],
+              "c:storage_blocks/iron": ["minecraft:iron_block"], "c:storage_blocks/gold": ["minecraft:gold_block"], "c:storage_blocks/copper": ["minecraft:copper_block"],
+              "minecraft:convertable_to_mud": ["minecraft:dirt", "minecraft:coarse_dirt", "minecraft:rooted_dirt"]}
 
     def items(self, tag, kind="item", seen=None):
         tag = tag if ":" in tag else "minecraft:" + tag
@@ -48,6 +56,17 @@ class Tags:
                 out.append(v if ":" in v else "minecraft:" + v)
         if not out and tag in self.COMMON:
             out = list(self.COMMON[tag])
+        if not out and tag.startswith("c:foods/raw_"):
+            kind = tag[len("c:foods/raw_"):]
+            out = {"pork": ["minecraft:porkchop"], "cod": ["minecraft:cod"], "salmon": ["minecraft:salmon"], "beef": ["minecraft:beef"],
+                   "chicken": ["minecraft:chicken"], "mutton": ["minecraft:mutton"], "rabbit": ["minecraft:rabbit"]}.get(kind, [])
+        if not out and tag.startswith("c:ores/"):
+            m = tag[len("c:ores/"):]
+            out = [f"minecraft:{m}_ore", f"minecraft:deepslate_{m}_ore"]
+        if not out and tag.startswith("c:storage_blocks/"):
+            out = [f"minecraft:{tag[len('c:storage_blocks/'):]}_block"]
+        if not out and tag.startswith("c:raw_materials/"):
+            out = [f"minecraft:raw_{tag[len('c:raw_materials/'):]}"]
         if not out and tag.startswith("c:dyes/"):
             out = [f"minecraft:{tag[7:]}_dye"]
         self.cache[k] = out

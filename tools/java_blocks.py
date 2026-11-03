@@ -9,7 +9,7 @@ HELPERS = {
     "metalProperties": dict(hardness=3.0, resistance=6, sound="metal"),
     "stoneProperties": dict(hardness=1.5, resistance=6, sound="stone"),
     "furniture": dict(hardness=2.0, resistance=3, sound="wood"),
-    "sconceProperties": dict(hardness=0.5, resistance=0.5, sound="lantern", light=13),
+    "sconceProperties": dict(hardness=0.5, resistance=0.5, sound="lantern", light=13, light_when="lit", collision=False),
     "wood(": dict(hardness=2.0, resistance=3, sound="wood"),
 }
 SOUNDS = {"WOOD": "wood", "METAL": "metal", "IRON": "metal", "STONE": "stone", "GLASS": "glass", "WOOL": "cloth",

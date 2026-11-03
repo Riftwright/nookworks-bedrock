@@ -8,6 +8,22 @@ def write_json(path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=1, ensure_ascii=False), encoding="utf8")
 
+def square_icon(name, tex):
+    """A poster's picture on a square transparent sheet, so its icon isn't stretched."""
+    from PIL import Image
+    from paths import JASSETS
+    src = JASSETS / "textures" / (tex.replace("textures/nookworks/", "") + ".png")
+    if not src.exists():
+        return tex
+    im = Image.open(src).convert("RGBA")
+    side = max(im.size)
+    sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+    out = RP / f"textures/nookworks_poster_icon/{name}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sq.save(out)
+    return f"textures/nookworks_poster_icon/{name}"
+
 def designs():
     out = {}
     for f in sorted((JDATA / "nookworks/nookworks/poster").glob("*.json")):
@@ -46,7 +62,7 @@ def run(item_tex, lang_add):
     for name, d in ds.items():
         sizes.setdefault((d["w"], d["h"]), []).append(name)
         key = "nwp_" + name
-        item_tex[key] = d["tex"]
+        item_tex[key] = square_icon(name, d["tex"])
         write_json(BP / f"items/poster_{name}.json", {"format_version": "1.21.90", "minecraft:item": {
             "description": {"identifier": f"nookworks:poster_{name}", "menu_category": {"category": "items"}},
             "components": {"minecraft:icon": key, "minecraft:display_name": {"value": f"item.nookworks.poster_{name}"},

@@ -12,6 +12,7 @@ const DIMS = () => ["overworld", "nether", "the_end"].map((d) => world.getDimens
 // ---- Quenching: a red-hot Velarium Ingot burns whoever holds it, cools after 600 t on the ground, and dropped
 //      into a Vegetable Oil Cauldron becomes a Tempered Velarium Ingot (one level of oil a piece).
 const HOT = "nookworks:red_hot_velarium_ingot";
+const hotSince = new Map(); // player -> tick the ingot they picked up went hot
 system.runInterval(
   safe(() => {
     for (const p of world.getAllPlayers()) {
@@ -23,8 +24,9 @@ system.runInterval(
         if (!p.getEffect("fire_resistance") && !isCreative(p)) {
           p.applyDamage(2, { cause: "fire" });
           inv.setItem(i, undefined);
-          const e = p.dimension.spawnItem(s, p.location);
-          e.setDynamicProperty("hotSince", system.currentTick);
+          const v = p.getViewDirection();
+          const e = p.dimension.spawnItem(s, { x: p.location.x + v.x * 1.5, y: p.location.y + 0.5, z: p.location.z + v.z * 1.5 });
+          e.setDynamicProperty("hotSince", hotSince.get(p.id) ?? system.currentTick);
         }
       }
     }
@@ -33,6 +35,7 @@ system.runInterval(
         const s = e.getComponent("minecraft:item")?.itemStack;
         if (s?.typeId !== HOT) continue;
         const since = e.getDynamicProperty("hotSince") ?? (e.setDynamicProperty("hotSince", system.currentTick), system.currentTick);
+        for (const pl of dim.getPlayers({ location: e.location, maxDistance: 3 })) hotSince.set(pl.id, since);
         const b = blockAt(dim, { x: Math.floor(e.location.x), y: Math.floor(e.location.y), z: Math.floor(e.location.z) });
         if (b?.typeId === "nookworks:vegetable_oil_cauldron") {
           const lvl = state(b, "level");
@@ -53,7 +56,7 @@ system.runInterval(
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   if (!e.isFirstEvent) return;
   const id = e.itemStack?.typeId;
-  if (e.block.typeId === "minecraft:cauldron" && id === "nookworks:vegetable_oil_bucket") {
+  if (e.block.typeId === "minecraft:cauldron" && id === "nookworks:vegetable_oil_bucket" && (e.block.permutation.getState("fill_level") ?? 0) === 0) {
     e.cancel = true;
     system.run(() => {
       e.block.setType("nookworks:vegetable_oil_cauldron");
@@ -64,7 +67,12 @@ world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
     e.cancel = true;
     system.run(() => {
       e.block.setType("minecraft:cauldron");
-      setHeld(e.player, new ItemStack("nookworks:vegetable_oil_bucket", 1));
+      const h = held(e.player);
+      if (h && h.amount > 1) {
+        h.amount--;
+        setHeld(e.player, h);
+        give(e.player, new ItemStack("nookworks:vegetable_oil_bucket", 1));
+      } else setHeld(e.player, new ItemStack("nookworks:vegetable_oil_bucket", 1));
     });
   }
 });
@@ -99,6 +107,16 @@ system.runInterval(
     }
   }, "illness"),
   20
+);
+
+// ---- the dishes it takes most to make give a few minutes of a boost (ModCooking.meal / bowlFood with an effect)
+const BOOSTS = { "nookworks:karaage": ["strength", 2400], "nookworks:tonkatsu": ["haste", 3600], "nookworks:fried_fish": ["water_breathing", 3600],
+  "nookworks:udon": ["speed", 3600], "nookworks:cream_stew": ["regeneration", 600] };
+world.afterEvents.itemCompleteUse.subscribe(
+  safe((e) => {
+    const b = BOOSTS[e.itemStack.typeId];
+    if (b) e.source.addEffect(b[0], b[1], { amplifier: 0 });
+  }, "food boost")
 );
 
 // ---- Soap: washes the dye out of wool, carpet, glass, panes, terracotta; 16 uses
@@ -188,6 +206,7 @@ system.runInterval(
 // ---- Oil Can: marks a door, trapdoor or gate as oiled (our Dawnwood ones and Motors then make no sound)
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   if (!e.isFirstEvent || e.itemStack?.typeId !== "nookworks:oil_can") return;
+  if (!/door|trapdoor|fence_gate|piston|nookworks:motor/.test(e.block.typeId)) return;
   e.cancel = true;
   const { block, player } = e;
   system.run(() => {
@@ -217,25 +236,43 @@ world.beforeEvents.playerInteractWithEntity.subscribe((e) => {
   });
 });
 
-// ---- Nook Dowsing Rod: points to the nearest sulfur caves (where cinnabar is)
+// ---- Nook Dowsing Rod: points to the nearest cinnabar within 32 blocks across and 48 down (Bedrock's biome
+//      search is not in the stable API, so it looks for the ore itself, a little each tick)
+const dowsing = new Set();
 world.afterEvents.itemUse.subscribe(
   safe((e) => {
-    if (e.itemStack.typeId !== "nookworks:nook_dowsing_rod") return;
+    if (e.itemStack.typeId !== "nookworks:nook_dowsing_rod" || dowsing.has(e.source.id)) return;
     const p = e.source;
+    dowsing.add(p.id);
     p.sendMessage({ rawtext: [tr("message.nookworks.nook_dowsing_rod.searching")] });
-    system.run(() => {
-      let found;
-      try {
-        found = p.dimension.findClosestBiome?.(p.location, "minecraft:sulfur_caves", { boundingSize: { x: 6400, y: 64, z: 6400 } });
-      } catch {}
-      if (!found) return p.sendMessage({ rawtext: [tr("nookworks.bedrock.dowsing_nothing")] });
-      const dx = found.x - p.location.x, dz = found.z - p.location.z;
-      const dist = Math.round(Math.hypot(dx, dz));
-      p.sendMessage({ rawtext: [dist < 16 ? tr("message.nookworks.nook_dowsing_rod.below", found.y) : tr("message.nookworks.nook_dowsing_rod.found", dist, found.y)] });
-      const yaw = (Math.atan2(-dx, dz) * 180) / Math.PI;
-      p.teleport(p.location, { rotation: { x: p.getRotation().x, y: yaw } });
-      wear(p);
-    });
+    const o = { x: Math.floor(p.location.x), y: Math.floor(p.location.y), z: Math.floor(p.location.z) };
+    const dim = p.dimension;
+    system.runJob(
+      (function* () {
+        let found = null;
+        for (let r = 0; r <= 32 && !found; r++)
+          for (let dx = -r; dx <= r && !found; dx++)
+            for (let dz = -r; dz <= r && !found; dz++) {
+              if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+              for (let y = o.y + 8; y >= Math.max(o.y - 48, -64); y--) {
+                const b = blockAt(dim, { x: o.x + dx, y, z: o.z + dz });
+                if (b?.typeId === "minecraft:cinnabar") {
+                  found = b.location;
+                  break;
+                }
+              }
+              yield;
+            }
+        dowsing.delete(p.id);
+        if (!p.isValid) return;
+        if (!found) return void p.sendMessage({ rawtext: [tr("nookworks.bedrock.dowsing_nothing")] });
+        const dx = found.x - o.x, dz = found.z - o.z;
+        const dist = Math.round(Math.hypot(dx, dz));
+        p.sendMessage({ rawtext: [dist < 2 ? tr("message.nookworks.nook_dowsing_rod.below", found.y) : tr("message.nookworks.nook_dowsing_rod.found", dist, found.y)] });
+        if (dist >= 2) p.teleport(p.location, { rotation: { x: p.getRotation().x, y: (Math.atan2(-dx, dz) * 180) / Math.PI } });
+        wear(p);
+      })()
+    );
   }, "dowsing")
 );
 

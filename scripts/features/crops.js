@@ -1,9 +1,10 @@
 // Crops and soil (docs/java_spec.md §13). Bedrock random-ticks a third as often as Java, so chances are tripled.
 import { world, system, ItemStack } from "@minecraft/server";
-import { onBlock } from "../lib/blocks.js";
-import { DIRS, add, blockAt, state, setStates, held, consumeHeld, chance, safe, randInt } from "../lib/util.js";
+import { onBlock, onItemTap } from "../lib/blocks.js";
+import { DIRS, add, blockAt, state, setStates, held, consumeHeld, chance, safe, randInt, isCreative } from "../lib/util.js";
 import { DATA } from "../generated/data.js";
 import { bedrockId } from "../lib/ids.js";
+import { dropLoot } from "./drops.js";
 
 const RT = 3; // random tick catch-up
 const FARMLAND = new Set(["minecraft:farmland", "nookworks:nourished_soil"]);
@@ -52,7 +53,8 @@ function aged(name, max, onRipe) {
     randomTick: ({ block }) => {
       const soil = below(block);
       if (!soil || (!FARMLAND.has(soil.typeId) && name !== "end_sprout")) {
-        block.dimension.runCommand(`setblock ${block.location.x} ${block.location.y} ${block.location.z} air destroy`);
+        dropLoot(block.dimension, block.location, block.typeId, block.permutation);
+        block.setType("minecraft:air");
         return;
       }
       const age = state(block, "age");
@@ -127,10 +129,12 @@ onBlock("corn", {
     const age = state(lower, "age");
     if (age < 5 && useBonemeal(player, lower)) growCorn(lower, age + 1);
   },
-  broken: ({ block, perm }) => {
+  broken: ({ block, perm, dim, player }) => {
     const half = perm.getState("nookworks:half");
     const other = half === "upper" ? below(block) : above(block);
+    const ripe = perm.getState("nookworks:age") >= 5;
     if (other?.typeId === "nookworks:corn") other.setType("minecraft:air");
+    if (ripe && !(player && isCreative(player))) dim.spawnItem(new ItemStack("nookworks:corn", randInt(2, 4)), block.center());
   },
 });
 function growCorn(lower, age) {
@@ -166,13 +170,19 @@ onBlock("rice", {
   },
   broken: ({ block }) => {
     const up = above(block);
-    if (up?.typeId === "nookworks:rice_panicles") up.setType("minecraft:air");
+    if (up?.typeId === "nookworks:rice_panicles") {
+      dropLoot(up.dimension, up.location, up.typeId, up.permutation);
+      up.setType("minecraft:air");
+    }
     block.setType("minecraft:water");
   },
 });
 onBlock("rice_panicles", {
   randomTick: ({ block }) => {
-    if (below(block)?.typeId !== "nookworks:rice") return block.setType("minecraft:air");
+    if (below(block)?.typeId !== "nookworks:rice") {
+      dropLoot(block.dimension, block.location, block.typeId, block.permutation);
+      return block.setType("minecraft:air");
+    }
     const age = state(block, "age");
     if (age < 3 && chance(RT / 5)) setStates(block, { age: age + 1 });
   },
@@ -183,6 +193,7 @@ onBlock("rice_panicles", {
 });
 
 // ---- nourished soil: a hoe tills it; it loses richness slowly; dries without water like farmland
+onItemTap("nourished_soil", (s) => s.hasTag("minecraft:is_hoe"));
 onBlock("nourished_soil", {
   interact: ({ block, player }) => {
     const h = held(player);

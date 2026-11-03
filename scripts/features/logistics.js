@@ -1,12 +1,13 @@
 // Magnet Chest, Trash Can, Item Warps, Elevators, Item/Precision Sorters (docs/java_spec.md §9).
+import { redstoneIn } from "../lib/blocks.js";
 import { world, system, ItemStack } from "@minecraft/server";
 import { ActionFormData } from "@minecraft/server-ui";
 import { onBlock } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
-import { packItem, unpackItem, sameItem, maxStack } from "../lib/store.js";
+import { packItem, unpackItem, sameItem, maxStack, packable } from "../lib/store.js";
 import { acceptors, containerOf, deliverBelow, pullFromHoppers, pushInto, dropSlots } from "../lib/inv.js";
-import { DIRS, OPPOSITE, add, blockAt, held, setHeld, tr, state, setStates, safe, facing, isCreative, center } from "../lib/util.js";
-import { slotsForm } from "./storage.js";
+import { DIRS, OPPOSITE, add, blockAt, held, setHeld, tr, state, setStates, safe, facing, isCreative, center, isSolidBlock } from "../lib/util.js";
+import { registerInv, entityOf, containerOfBlock, dropAndRemove } from "../lib/invent.js";
 import { itemText } from "../lib/machine.js";
 import { setting } from "./settings.js";
 
@@ -30,52 +31,51 @@ function addToSlots(d, size, p) {
   return left;
 }
 
-// ---- Magnet Chest: 27 slots, pulls dropped items within 5 blocks
+// ---- Magnet Chest: 27 slots in its own screen, pulls dropped items within 5 blocks; a hopper under it empties it
+registerInv("magnet_chest", { size: 27 });
 onBlock("magnet_chest", {
-  interact: ({ block, player }) => slotsForm(block, player, 27, "block.nookworks.magnet_chest"),
-  broken: ({ block, dim }) => dropSlots(dim, block.location, store.getKey(store.keyOf(block))?.slots),
+  place: ({ block }) => entityOf(block),
+  broken: ({ block, dim }) => dropAndRemove(block, dim),
   tick: ({ block }) => {
-    const d = store.get(block, () => ({ slots: new Array(27).fill(null) }));
+    const c = containerOfBlock(block);
+    if (!c) return;
     for (const it of block.dimension.getEntities({ type: "minecraft:item", location: block.center(), maxDistance: 5 })) {
       const s = it.getComponent("minecraft:item")?.itemStack;
       if (!s) continue;
-      const left = addToSlots(d, 27, packItem(s));
-      if (left === s.amount) continue;
-      if (left) {
-        const rest = s.clone();
-        rest.amount = left;
-        it.dimension.spawnItem(rest, it.location);
-      }
+      const rest = c.addItem(s);
+      if (rest && rest.amount === s.amount) continue;
+      if (rest) it.dimension.spawnItem(rest, it.location);
       it.remove();
-      store.save(block);
     }
-    // a hopper underneath empties it
     const below = blockAt(block.dimension, add(block.location, DIRS.down));
-    const c = below?.typeId === "minecraft:hopper" && containerOf(below);
-    if (c) {
-      const i = d.slots.findIndex((x) => x);
-      if (i >= 0) {
-        const s = unpackItem({ ...d.slots[i], n: 1 });
-        if (s && !c.addItem(s)) {
-          d.slots[i].n--;
-          if (!d.slots[i].n) d.slots[i] = null;
-          store.save(block);
+    const hc = below?.typeId === "minecraft:hopper" && containerOf(below);
+    if (hc) {
+      for (let i = 0; i < c.size; i++) {
+        const s = c.getItem(i);
+        if (!s) continue;
+        const one = s.clone();
+        one.amount = 1;
+        if (!hc.addItem(one)) {
+          if (s.amount > 1) {
+            s.amount--;
+            c.setItem(i, s);
+          } else c.setItem(i, undefined);
         }
+        break;
       }
     }
   },
 });
 acceptors.set("nookworks:magnet_chest", (block, p) => {
-  const d = store.get(block, () => ({ slots: new Array(27).fill(null) }));
-  const left = addToSlots(d, 27, p);
-  store.save(block);
-  return left;
+  const c = containerOfBlock(block);
+  if (!c) return p.n;
+  return pushInto(c, p);
 });
 
 // ---- Trash Can: takes from hoppers only while powered (Bedrock: while a redstone signal reaches it)
 onBlock("trash_can", {
   tick: ({ block }) => {
-    const powered = (block.getRedstonePower?.() ?? 0) > 0;
+    const powered = redstoneIn(block) > 0;
     setStates(block, { powered });
     if (!powered) return;
     const d = store.get(block, () => ({ destroyed: 0 }));
@@ -119,7 +119,7 @@ function senderTick(horizontal) {
       const top = { x: block.location.x + 0.5, y: block.location.y + 1.2, z: block.location.z + 0.5 };
       for (const it of block.dimension.getEntities({ type: "minecraft:item", location: top, maxDistance: 0.9 })) {
         const s = it.getComponent("minecraft:item")?.itemStack;
-        if (!s) continue;
+        if (!s || !packable(s)) continue;
         d.slot = packItem(s);
         it.remove();
         break;
@@ -170,7 +170,7 @@ system.runInterval(
         if (b?.typeId !== "nookworks:elevator") continue;
         const a1 = blockAt(pl.dimension, add(b.location, DIRS.up));
         const a2 = blockAt(pl.dimension, add(b.location, DIRS.up, 2));
-        if (!a1 || !a2 || !(a1.isAir || !a1.isSolid) || !(a2.isAir || !a2.isSolid)) continue;
+        if (!a1 || !a2 || isSolidBlock(a1) || isSolidBlock(a2) || /lava|fire/.test(a1.typeId + a2.typeId)) continue;
         pl.teleport({ x: loc.x, y: b.location.y + 1, z: loc.z }, { keepVelocity: false });
         pl.dimension.playSound("mob.endermen.portal", b.location, { volume: 0.4, pitch: 1.4 });
         cooldown.set(pl.id, system.currentTick + 8);
@@ -216,7 +216,7 @@ function sorterTick(block) {
       if (c) {
         for (let i = 0; i < c.size; i++) {
           const s = c.getItem(i);
-          if (!s) continue;
+          if (!s || !packable(s)) continue;
           const listed = d.keepOut.includes(s.typeId);
           if (d.keepOnly ? !listed : listed) continue;
           const k = Math.min(per, s.amount);
@@ -233,7 +233,7 @@ function sorterTick(block) {
     const match = d.filter.includes(d.held.id) !== !!d.exclude;
     let out = match ? RIGHT[f] : OPPOSITE[RIGHT[f]];
     if (state(block, "swapped")) out = OPPOSITE[out];
-    const left = deliverBelow(block, d.held, { dir: out });
+    const left = deliverBelow(block, d.held, { dir: out, onlyDir: true });
     d.held = left > 0 ? { ...d.held, n: left } : null;
     if (d.held) break;
   }

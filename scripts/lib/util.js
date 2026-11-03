@@ -150,6 +150,13 @@ export function itemName(typeId) {
   return { translate: `item.${typeId.replace("minecraft:", "")}.name` };
 }
 
+const PASSABLE = /air|water|lava|flower|tulip|orchid|allium|bluet|daisy|poppy|dandelion|cornflower|lily_of|rose|grass$|short_grass|tall_grass|fern|bush|sapling|torch|rail|button|lever|sign|banner|carpet|snow_layer|vine|kelp|seagrass|mushroom$|fungus|roots|wheat|carrots|potatoes|beetroot|redstone_wire|tripwire|pressure_plate|light_block|fire|ladder|cobweb|web$|sugar_cane|reeds|coral_fan|pointed_dripstone|candle|frame|rope|thin_rope|hung_light|crop|corn$|onions|rice|propagule|sprout/;
+/** A block one can't walk through (Block.isSolid is not in the stable API). */
+export function isSolidBlock(b) {
+  if (!b || b.isAir || b.isLiquid) return false;
+  return !PASSABLE.test(b.typeId);
+}
+
 export function chance(p) {
   return Math.random() < p;
 }

@@ -72,6 +72,7 @@ export function reach(block) {
   const out = [];
   const queue = [block.location];
   let steps = 0;
+  let partial = false;
   while (queue.length && steps++ < 1024) {
     const p = queue.shift();
     for (const d of Object.values(DIRS)) {
@@ -80,20 +81,25 @@ export function reach(block) {
       if (seen.has(qk)) continue;
       seen.add(qk);
       const b = blockAt(dim, q);
-      if (!b) continue;
+      if (!b) {
+        partial = true;
+        continue;
+      }
       if (PIPES.has(b.typeId)) {
         if (b.typeId === id("valve") && b.permutation.getState("nookworks:open") === false) continue;
         queue.push(q);
       } else if (fluidHolders.has(b.typeId)) out.push(qk);
     }
   }
-  cache.set(k, { v: worldVersion(), list: out });
+  if (!partial) cache.set(k, { v: worldVersion(), list: out });
   return out;
 }
 
 /** Pushes up to n of fluid f from block through pipes into tanks that accept it; returns the amount moved. */
-export function pushFluid(block, f, n) {
+export function pushFluid(block, f, n, { consumersOnly = false } = {}) {
   let moved = 0;
+  // machines that use it first, then tanks that store it (a tank on the line is not a dead end)
+  for (const pass of consumersOnly ? [0] : [0, 1])
   for (const k of reach(block)) {
     if (moved >= n) break;
     const { dim, pos } = parseKey(k);
@@ -102,7 +108,9 @@ export function pushFluid(block, f, n) {
     const ports = fluidHolders.get(b.typeId)?.(b) ?? [];
     for (const port of ports) {
       if (moved >= n) break;
-      if (port.accepts && !port.accepts(f)) continue;
+      // a tank with no rule of what it takes, but that gives, is an outlet only (a pump's, a retort's mercury)
+      if (port.accepts ? !port.accepts(f) : port.gives) continue;
+      if ((pass === 0) === !!port.gives) continue; // pass 0: consumers; pass 1: storage (takes and gives)
       const got = fill(port.tank, port.cap, f, n - moved);
       if (got) {
         moved += got;

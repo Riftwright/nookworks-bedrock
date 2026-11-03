@@ -6,6 +6,9 @@ MATERIALS = {
     "golden": (32, 12, 0, "golden", 22), "diamond": (1561, 8, 3, "diamond", 10), "netherite": (2031, 9, 4, "netherite", 15),
     "velarium": (3400, 11, 5.5, "netherite", 18),
 }
+REPAIR = {"stone": "minecraft:cobblestone", "copper": "minecraft:copper_ingot", "iron": "minecraft:iron_ingot",
+          "golden": "minecraft:gold_ingot", "diamond": "minecraft:diamond", "netherite": "minecraft:netherite_ingot",
+          "velarium": "nookworks:tempered_velarium_ingot"}
 BASE_DAMAGE = {"sword": 4, "axe": 6, "pickaxe": 2, "shovel": 2.5, "hoe": 1, "hammer": 4}
 DIG_TAG = {"pickaxe": "minecraft:is_pickaxe_item_destructible", "axe": "minecraft:is_axe_item_destructible",
            "shovel": "minecraft:is_shovel_item_destructible", "hoe": "minecraft:is_hoe_item_destructible",
@@ -34,8 +37,9 @@ def components(iid):
                 "minecraft:digger": {"use_efficiency": True, "destroy_speeds": [
                     {"block": {"tags": f"q.any_tag('{DIG_TAG[kind]}')"}, "speed": speed}]},
                 "minecraft:tags": {"tags": [f"minecraft:{tier}_tier", "minecraft:is_tool"] +
-                                   ([f"minecraft:is_{kind}"] if kind != "hammer" else ["nookworks:hammer"])},
-                "minecraft:repairable": {"repair_items": [{"items": [f"nookworks:{mat}_ingot" if mat == "velarium" else f"minecraft:{mat}_ingot"], "repair_amount": dur // 4}]},
+                                   ([f"minecraft:is_{kind}"] if kind != "hammer" else ["minecraft:is_pickaxe", "nookworks:hammer"]) +
+                                   (["minecraft:transformable_items"] if mat == "diamond" else [])},
+                "minecraft:repairable": {"repair_items": [{"items": [REPAIR[mat]], "repair_amount": dur // 4}]},
             }
             if kind == "sword":
                 c["minecraft:can_destroy_in_creative"] = False

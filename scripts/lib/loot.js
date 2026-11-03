@@ -63,7 +63,12 @@ function cond(c, ctx) {
       return Math.random() < (c.chances?.[ctx.fortune ?? 0] ?? c.chances?.[0] ?? 1);
     case "killed_by_player":
       return !!ctx.player;
-    case "reference":
+    case "reference": {
+      const n = c.name ?? "";
+      if (/shear/.test(n)) return !!ctx.tool && /shears/.test(ctx.tool.typeId);
+      if (/silk/.test(n)) return !!ctx.silk;
+      return true;
+    }
     case "value_check":
     case "entity_properties":
     case "location_check":
@@ -83,7 +88,11 @@ function applyFns(fns, out, ctx) {
     if (!conds(f.conditions, ctx)) continue;
     const t = (f.function ?? f.type ?? "").replace("minecraft:", "");
     if (t === "set_count") out.n = f.add ? out.n + Math.floor(num(f.count, ctx)) : Math.floor(num(f.count, ctx));
-    else if (t === "apply_bonus" && ctx.fortune) {
+    else if (t === "apply_bonus" && (f.formula ?? "").includes("binomial_with_bonus_count")) {
+      // crops: extra tries of a chance each, Fortune adding tries
+      const tries = (f.parameters?.extra ?? 0) + (ctx.fortune ?? 0);
+      for (let i = 0; i < tries; i++) if (Math.random() < (f.parameters?.probability ?? 0.5)) out.n++;
+    } else if (t === "apply_bonus" && ctx.fortune) {
       if (f.formula?.includes("ore_drops")) out.n *= Math.max(1, 1 + Math.floor(Math.random() * (ctx.fortune + 2)) - 1);
       else if (f.formula?.includes("uniform_bonus_count")) out.n += Math.floor(Math.random() * (ctx.fortune * (f.parameters?.bonusMultiplier ?? 1) + 1));
     } else if (t === "limit_count") {

@@ -1,5 +1,6 @@
 // Lights and small decor (docs/java_spec.md §14, §11 warp anchor / dark matter).
-import { world, system, ItemStack } from "@minecraft/server";
+import { redstoneIn } from "../lib/blocks.js";
+import { world, system, ItemStack, BlockPermutation } from "@minecraft/server";
 import { onBlock } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
 import { DIRS, add, blockAt, held, consumeHeld, state, setStates, isCreative, give, tr, actionbar, safe } from "../lib/util.js";
@@ -97,7 +98,7 @@ onBlock("filament_bulb", {
     block.dimension.playSound("random.click", block.location, { volume: 0.3, pitch: 1.6 });
   },
   tick: ({ block }) => {
-    const p = (block.getRedstonePower?.() ?? 0) > 0;
+    const p = redstoneIn(block) > 0;
     const d = store.get(block, () => ({ p: false }));
     if (p !== d.p) {
       d.p = p;
@@ -122,17 +123,15 @@ const BOTTLES = new Set(Object.keys(DATA.dataMaps["item/placed_bottle"]?.values 
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   if (!e.isFirstEvent || !e.player.isSneaking || !e.itemStack || e.blockFace !== "Up") return;
   const id = e.itemStack.typeId;
-  if (!BOTTLES.has(id) && id !== "minecraft:glass_bottle" && id !== "minecraft:potion") return;
+  if (!BOTTLES.has(id) && id !== "minecraft:glass_bottle") return;
+  if (/potion/.test(id)) return;
   const target = e.block.typeId === "nookworks:placed_bottles" ? e.block : blockAt(e.block.dimension, add(e.block.location, DIRS.up));
   if (!target || !(target.isAir || target.typeId === "nookworks:placed_bottles")) return;
   e.cancel = true;
   const player = e.player;
   system.run(() => {
+    if (target.isAir) target.setType("nookworks:placed_bottles");
     const d = store.get(target, () => ({ bottles: [] }));
-    if (target.isAir) {
-      target.setType("nookworks:placed_bottles");
-      d.bottles = [];
-    }
     if (d.bottles.length >= 4) return;
     d.bottles.push(id);
     setStates(target, { bottles: Math.max(2, d.bottles.length) });
@@ -166,6 +165,11 @@ onBlock("placed_bottles", {
 for (const [name, max] of [["wine_glass", 4], ["mug", 4], ["pebbles", 4]]) {
   const key = name === "pebbles" ? "pebbles" : "count";
   onBlock(name, {
+    broken: ({ block, dim, perm, player }) => {
+      if (player && isCreative(player)) return;
+      const n = perm.getState(`nookworks:${key}`) ?? 1;
+      dim.spawnItem(new ItemStack(`nookworks:${name}`, n), block.center());
+    },
     interact: ({ block, player }) => {
       const h = held(player);
       if (h?.typeId !== block.typeId) return;
@@ -178,30 +182,50 @@ for (const [name, max] of [["wine_glass", 4], ["mug", 4], ["pebbles", 4]]) {
   });
 }
 
-// ---- Warp Anchor: a click toggles it; while on, endermen and shulkers within ±4/±2 don't teleport
-//      (Bedrock: they are held in place by slowness, and pearls landing there are stopped)
+// ---- Warp Anchor: a click toggles it; while on, endermen and shulkers seen within ±4/±2 are put back when they
+//      jump (Bedrock has no teleport event to cancel), and pearls entering it are stopped
+export const anchors = new Map(); // key -> {dim, pos}
 onBlock("warp_anchor", {
   interact: ({ block }) => {
     setStates(block, { on: !state(block, "on") });
     block.dimension.playSound(state(block, "on") ? "beacon.activate" : "beacon.deactivate", block.location);
   },
+  broken: ({ block }) => anchors.delete(`${block.dimension.id}|${block.location.x},${block.location.y},${block.location.z}`),
   tick: ({ block }) => {
-    if (!state(block, "on")) return;
+    const key = `${block.dimension.id}|${block.location.x},${block.location.y},${block.location.z}`;
+    if (!state(block, "on")) return void anchors.delete(key);
+    anchors.set(key, { dim: block.dimension.id, pos: block.center() });
     const c = block.center();
+    const d = store.get(block, () => ({ seen: {} }));
+    d.seen ??= {};
     for (const e of block.dimension.getEntities({ location: c, maxDistance: 7 })) {
       const l = e.location;
       if (Math.abs(l.x - c.x) > 4.5 || Math.abs(l.z - c.z) > 4.5 || Math.abs(l.y - c.y) > 2.5) continue;
       if (e.typeId === "minecraft:enderman" || e.typeId === "minecraft:shulker") {
-        const d = store.get(block, () => ({ seen: {} }));
-        // put back where it was when it is found to have jumped
         const last = d.seen[e.id];
-        if (last && (Math.abs(last.x - l.x) > 2 || Math.abs(last.z - l.z) > 2)) e.teleport(last);
-        else d.seen[e.id] = { x: l.x, y: l.y, z: l.z };
+        if (!last || (Math.abs(last.x - l.x) < 2 && Math.abs(last.z - l.z) < 2)) d.seen[e.id] = { x: l.x, y: l.y, z: l.z };
       }
-      if (e.typeId === "minecraft:ender_pearl" || e.typeId === "nookworks:lode_pearl") e.remove();
+      if (e.typeId === "minecraft:ender_pearl") e.remove();
     }
+    // those seen: wherever they jumped to, back they come
+    for (const [id, last] of Object.entries(d.seen)) {
+      const e = world.getEntity(id);
+      if (!e?.isValid) {
+        delete d.seen[id];
+        continue;
+      }
+      const l = e.location;
+      if (Math.abs(l.x - last.x) > 2 || Math.abs(l.z - last.z) > 2 || Math.abs(l.y - last.y) > 3) e.teleport(last, { dimension: block.dimension });
+    }
+    store.save(block);
   },
 });
+/** Is a place within an anchor's box? (Lode Pearls ask) */
+export function anchored(dimId, p) {
+  for (const a of anchors.values())
+    if (a.dim === dimId && Math.abs(p.x - a.pos.x) <= 4.5 && Math.abs(p.z - a.pos.z) <= 4.5 && Math.abs(p.y - a.pos.y) <= 2.5) return true;
+  return false;
+}
 
 // ---- Dark Matter: night at noon nearby. Bedrock can't take light away, so players within 7 are given Darkness.
 onBlock("dark_matter", {
@@ -213,3 +237,21 @@ onBlock("dark_matter", {
     }
   },
 });
+
+// ---- set against a wall: the wall form (Java's StandingAndWallBlockItem), facing out from the wall
+const WALL_FORM = { "nookworks:sconce": "nookworks:wall_sconce", "nookworks:dawnwood_sign": "nookworks:dawnwood_wall_sign",
+  "nookworks:dawnwood_hanging_sign": "nookworks:dawnwood_wall_hanging_sign" };
+const FACES = { North: "north", South: "south", East: "east", West: "west" };
+const lastFace = new Map();
+world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
+  if (e.itemStack && WALL_FORM[e.itemStack.typeId]) lastFace.set(e.player.id, { face: e.blockFace, t: system.currentTick });
+});
+world.afterEvents.playerPlaceBlock.subscribe(
+  safe((e) => {
+    const wall = WALL_FORM[e.block.typeId];
+    const f = lastFace.get(e.player.id);
+    if (!wall || !f || system.currentTick - f.t > 2 || !FACES[f.face]) return;
+    const keep = e.block.typeId === "nookworks:sconce" ? { "nookworks:lit": e.block.permutation.getState("nookworks:lit") ?? false } : {};
+    e.block.setPermutation(BlockPermutation.resolve(wall, { "minecraft:cardinal_direction": FACES[f.face], ...keep }));
+  }, "wall form")
+);

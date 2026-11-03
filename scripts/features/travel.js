@@ -8,7 +8,7 @@
 import { world, system, ItemStack, BlockPermutation } from "@minecraft/server";
 import { ActionFormData } from "@minecraft/server-ui";
 import { onBlock } from "../lib/blocks.js";
-import { DIRS, OPPOSITE, add, blockAt, held, tr, actionbar, safe, setStates, state, isCreative, facing, randInt } from "../lib/util.js";
+import { DIRS, OPPOSITE, add, blockAt, held, tr, actionbar, safe, setStates, state, isCreative, facing, randInt, isSolidBlock } from "../lib/util.js";
 
 const DOOR = "nookworks:daemon_door";
 const DIM_KEYS = { "minecraft:overworld": "nookworks.bedrock.dim_overworld", "minecraft:nether": "nookworks.bedrock.dim_nether",
@@ -41,7 +41,7 @@ onBlock("daemon_door", {
     }
     setStates(block, { half: "lower" });
     above.setPermutation(block.permutation.withState("nookworks:half", "upper"));
-    doors[block.dimension.id] = { ...block.location };
+    doors[block.dimension.id] = { ...block.location, f: state(block, "minecraft:cardinal_direction") ?? "north" };
     if (!getJ("homeDoor", null)) setJ("homeDoor", block.dimension.id);
     setJ("doors", doors);
   },
@@ -112,27 +112,61 @@ function travelTo(player, target) {
     // first trip: a return door near where the player last was there (or a sensible spot)
     const v = JSON.parse(player.getDynamicProperty("visited") ?? "{}")[target];
     const base = v ?? (target === "minecraft:the_end" ? { x: 100, y: 49, z: 0 } : { x: Math.floor(player.location.x / (target === "minecraft:nether" ? 8 : 1)), y: 64, z: Math.floor(player.location.z / (target === "minecraft:nether" ? 8 : 1)) });
+    player.addEffect("resistance", 100, { amplifier: 4, showParticles: false });
     player.teleport({ x: base.x + 0.5, y: base.y + 1, z: base.z + 0.5 }, { dimension: dim });
-    system.runTimeout(safe(() => buildReturnDoor(player, dim, base), "returnDoor"), 20);
+    system.runTimeout(safe(() => {
+      freeSpot(player, dim);
+      buildReturnDoor(player, dim, base);
+    }, "returnDoor"), 20);
     return;
   }
-  const f = facing(blockAt(dim, d) ?? { permutation: { getState: () => "north" } });
+  // the far door's chunk is seldom loaded: its facing was kept when it was placed
+  const f = d.f ?? (blockAt(dim, d) ? facing(blockAt(dim, d)) : "north");
   const out = add(d, DIRS[f]);
   player.teleport({ x: out.x + 0.5, y: out.y, z: out.z + 0.5 }, { dimension: dim });
   dim.playSound("mob.endermen.portal", out);
 }
 
+/** Out of rock: up to the first two free blocks above (the spot a first trip lands on may be inside the ground). */
+function freeSpot(player, dim) {
+  const l = player.location;
+  for (let y = Math.floor(l.y); y < Math.min(dim.heightRange.max - 2, Math.floor(l.y) + 64); y++) {
+    const a = blockAt(dim, { x: Math.floor(l.x), y, z: Math.floor(l.z) });
+    const b = blockAt(dim, { x: Math.floor(l.x), y: y + 1, z: Math.floor(l.z) });
+    if (a && b && !isSolidBlock(a) && !isSolidBlock(b) && !/lava/.test(a.typeId + b.typeId)) {
+      if (y !== Math.floor(l.y)) player.teleport({ x: l.x, y, z: l.z });
+      return;
+    }
+  }
+}
+
 function buildReturnDoor(player, dim, base) {
   const doors = getJ("doors", {});
   if (doors[dim.id]) return;
-  const p = { x: Math.floor(player.location.x) + 2, y: Math.floor(player.location.y), z: Math.floor(player.location.z) };
-  // a stone-brick frame with a floor, the door in its middle facing the player
-  dim.runCommand(`fill ${p.x - 1} ${p.y - 1} ${p.z - 1} ${p.x + 1} ${p.y + 2} ${p.z + 1} stonebrick`);
+  // beside the player, where nothing with contents stands
+  let p = null;
+  for (let dx = 2; dx <= 6 && !p; dx++) {
+    const q = { x: Math.floor(player.location.x) + dx, y: Math.floor(player.location.y), z: Math.floor(player.location.z) };
+    let ok = true;
+    for (const [ax, ay, az] of [[0, 0, 0], [0, 1, 0], [0, 0, -1], [0, 1, -1]]) {
+      const b = blockAt(dim, { x: q.x + ax, y: q.y + ay, z: q.z + az });
+      if (!b) ok = false;
+      else
+        try {
+          if (b.getComponent("minecraft:inventory") || b.typeId.startsWith("nookworks:")) ok = false;
+        } catch {}
+    }
+    if (ok) p = q;
+  }
+  if (!p) return;
+  // a stone-brick frame where there is air, the door in its middle facing north
+  dim.runCommand(`fill ${p.x - 1} ${p.y - 1} ${p.z - 1} ${p.x + 1} ${p.y + 2} ${p.z + 1} stone_bricks keep`);
+  // the frame open to the north, where the door faces and where travellers step out
   dim.runCommand(`fill ${p.x} ${p.y} ${p.z - 1} ${p.x} ${p.y + 1} ${p.z} air`);
   const lower = dim.getBlock(p);
-  lower.setPermutation(BlockPermutation.resolve(DOOR, { "minecraft:cardinal_direction": "west", "nookworks:half": "lower" }));
-  dim.getBlock(add(p, DIRS.up)).setPermutation(BlockPermutation.resolve(DOOR, { "minecraft:cardinal_direction": "west", "nookworks:half": "upper" }));
-  doors[dim.id] = { ...p };
+  lower.setPermutation(BlockPermutation.resolve(DOOR, { "minecraft:cardinal_direction": "north", "nookworks:half": "lower" }));
+  dim.getBlock(add(p, DIRS.up)).setPermutation(BlockPermutation.resolve(DOOR, { "minecraft:cardinal_direction": "north", "nookworks:half": "upper" }));
+  doors[dim.id] = { ...p, f: "north" };
   setJ("doors", doors);
   player.setDynamicProperty("doorTarget", getJ("homeDoor", "minecraft:overworld"));
 }
@@ -170,6 +204,7 @@ onBlock("if_mirror", {
     if (ret && player.getDynamicProperty("inIf")) {
       const r = JSON.parse(ret);
       player.setDynamicProperty("inIf", false);
+      cooldown.set(player.id, system.currentTick + 60);
       player.teleport(r.pos, { dimension: world.getDimension(r.dim) });
       return;
     }
@@ -190,7 +225,18 @@ function ifPlace(n) {
 function goIf(player, fromBlock) {
   const n = player.getDynamicProperty("ifNumber");
   if (!n) return;
-  player.setDynamicProperty("ifReturn", JSON.stringify({ dim: player.dimension.id, pos: { ...player.location } }));
+  let back = { ...player.location };
+  if (!fromBlock) {
+    // through a door: come back in front of it, not inside its doorway, and the door set to lead home again
+    const door = getJ("doors", {})[player.dimension.id];
+    const db = door && blockAt(player.dimension, door);
+    if (door) {
+      const out = add(door, DIRS[door.f ?? (db ? facing(db) : "north")]);
+      back = { x: out.x + 0.5, y: out.y, z: out.z + 0.5 };
+    }
+    player.setDynamicProperty("doorTarget", getJ("homeDoor", "minecraft:overworld"));
+  }
+  player.setDynamicProperty("ifReturn", JSON.stringify({ dim: player.dimension.id, pos: back }));
   player.setDynamicProperty("inIf", true);
   const at = ifPlace(n);
   const ow = world.getDimension("overworld");
@@ -204,11 +250,17 @@ function goIf(player, fromBlock) {
       if (!player.isOnGround) return;
       system.clearRun(job);
       player.removeEffect("slow_falling");
-      const p = { x: Math.floor(player.location.x) + 1, y: Math.floor(player.location.y), z: Math.floor(player.location.z) };
-      const b = blockAt(player.dimension, p), up = blockAt(player.dimension, add(p, DIRS.up));
-      if (b?.isAir && up?.isAir) {
+      // the mirror home: the nearest free two-high spot beside the player (a pillar of stone under it if need be)
+      const o = { x: Math.floor(player.location.x), y: Math.floor(player.location.y), z: Math.floor(player.location.z) };
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [0, 2], [-2, 0], [0, -2], [1, 1], [-1, -1]]) {
+        const p = { x: o.x + dx, y: o.y, z: o.z + dz };
+        const b = blockAt(player.dimension, p), up = blockAt(player.dimension, add(p, DIRS.up));
+        if (!b?.isAir || !up?.isAir) continue;
+        const under = blockAt(player.dimension, add(p, DIRS.down));
+        if (under?.isAir) under.setType("minecraft:stone");
         b.setPermutation(BlockPermutation.resolve(IF, { "minecraft:cardinal_direction": "west", "nookworks:half": "lower" }));
         up.setPermutation(BlockPermutation.resolve(IF, { "minecraft:cardinal_direction": "west", "nookworks:half": "upper" }));
+        break;
       }
     }, "if landing"),
     10

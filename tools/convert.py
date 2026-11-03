@@ -9,7 +9,7 @@ import json, re, shutil, uuid
 from paths import *
 import convert_blocks, convert_items, java_tags, tool_items, convert_posters
 
-VERSION = [1, 0, 1]
+VERSION = [1, 0, 3]
 MIN_ENGINE = [1, 26, 60]
 SERVER_VERSION = "2.11.0"     # @minecraft/server, stable
 SERVER_UI_VERSION = "2.3.0"   # @minecraft/server-ui, stable
@@ -41,9 +41,18 @@ RENAMES = {
     "minecraft:shulker_box": "minecraft:undyed_shulker_box", "minecraft:zombified_piglin_spawn_egg": "minecraft:zombie_pigman_spawn_egg",
     "minecraft:mooshroom_spawn_egg": "minecraft:mooshroom_spawn_egg",
     "minecraft:flowering_azalea_leaves": "minecraft:azalea_leaves_flowered",
+    "minecraft:rooted_dirt": "minecraft:dirt_with_roots", "minecraft:stonecutter": "minecraft:stonecutter_block",
+    "minecraft:cobblestone_stairs": "minecraft:stone_stairs", "minecraft:end_stone_brick_stairs": "minecraft:end_brick_stairs",
+    "minecraft:prismarine_brick_stairs": "minecraft:prismarine_bricks_stairs", "minecraft:red_nether_bricks": "minecraft:red_nether_brick",
+    "minecraft:dead_bush": "minecraft:deadbush", "minecraft:waxed_copper_block": "minecraft:waxed_copper",
+    "minecraft:oak_door": "minecraft:wooden_door", "minecraft:oak_trapdoor": "minecraft:trapdoor",
+    "minecraft:oak_fence_gate": "minecraft:fence_gate", "minecraft:oak_button": "minecraft:wooden_button",
+    "minecraft:oak_pressure_plate": "minecraft:wooden_pressure_plate", "minecraft:spectral_arrow": "minecraft:arrow",
     "minecraft:light_gray_glazed_terracotta": "minecraft:silver_glazed_terracotta", "minecraft:fire": "minecraft:fire",
 }
 
+for _c in ("white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"):
+    RENAMES.setdefault(f"minecraft:{_c}_banner", "minecraft:banner")
 _KNOWN = None
 UNKNOWN = set()
 def bid(jid):
@@ -72,6 +81,7 @@ CROP_BLOCKS = {
 }
 PLANTS_ON = {"corn_kernels": ["minecraft:farmland", "nookworks:nourished_soil"], "onion": ["minecraft:farmland", "nookworks:nourished_soil"],
              "sunflower_seeds": ["minecraft:farmland", "nookworks:nourished_soil"], "end_seed": ["minecraft:farmland", "nookworks:nourished_soil", "minecraft:dirt", "minecraft:grass_block"],
+             "rare_seed": ["minecraft:dirt", "minecraft:grass_block", "minecraft:podzol", "minecraft:moss_block", "minecraft:farmland", "nookworks:nourished_soil"],
              "brown_rice": ["minecraft:dirt", "minecraft:grass_block", "minecraft:farmland", "minecraft:mud", "minecraft:clay", "nookworks:nourished_soil"]}
 
 def stable_uuid(name):
@@ -182,6 +192,9 @@ def result_of(r):
     res = r["result"]
     if isinstance(res, str):
         return {"item": bid(res)}
+    design = (res.get("components") or {}).get("nookworks:poster")
+    if res.get("id") == "nookworks:poster" and design:
+        return {"item": "nookworks:poster_" + design.split(":")[-1], "count": res.get("count", 1)}
     out = {"item": bid(res["id"])}
     if res.get("count", 1) != 1:
         out["count"] = res["count"]
@@ -264,8 +277,44 @@ def convert_recipes(tags):
 
 # ---------------------------------------------------------------- loot
 
+def normalise_loot(o):
+    """Java 26.x loot JSON -> the older shape scripts/lib/loot.js reads: `condition` -> `conditions` [..],
+    `modifier` -> `functions` [..], match_block{state} -> block_state_property{properties}, predicate references
+    ("minecraft:tool/can_shear") -> {condition: reference, name}."""
+    if isinstance(o, list):
+        return [normalise_loot(x) for x in o]
+    if isinstance(o, str):
+        return o
+    if not isinstance(o, dict):
+        return o
+    o = {k: normalise_loot(v) for k, v in o.items()}
+    if "condition" in o and not isinstance(o.get("condition"), str):
+        c = o.pop("condition")
+        o["conditions"] = (o.get("conditions") or []) + (c if isinstance(c, list) else [c])
+    if "conditions" in o:
+        o["conditions"] = [{"condition": "reference", "name": c} if isinstance(c, str) else c for c in o["conditions"]]
+    if "modifier" in o:
+        m = o.pop("modifier")
+        o["functions"] = (o.get("functions") or []) + (m if isinstance(m, list) else [m])
+    t = str(o.get("type", o.get("condition", ""))).replace("minecraft:", "")
+    if t == "match_block" and "state" in o:
+        o = {"condition": "block_state_property", "properties": o["state"]}
+    if "type" in o and "condition" not in o and t in ("survives_explosion", "match_tool", "random_chance", "inverted",
+                                                      "any_of", "all_of", "table_bonus", "block_state_property",
+                                                      "random_chance_with_enchanted_bonus", "killed_by_player"):
+        o["condition"] = o["type"]
+    return o
+
 def simple_self_drop(lt, block):
     """True when a Java block loot table only drops the block itself (the Bedrock default)."""
+    # any function, or any condition other than surviving an explosion, needs the script's evaluation
+    n = normalise_loot(lt)
+    s = json.dumps(n)
+    if '"functions"' in s:
+        return False
+    import re as _re
+    if any(c.replace("minecraft:", "") != "survives_explosion" for c in _re.findall(r'"condition": "([^"]+)"', s)):
+        return False
     pools = lt.get("pools", [])
     if len(pools) != 1:
         return False
@@ -283,7 +332,7 @@ def convert_loot(block_ids):
         b = f.stem
         lt = json.load(open(f, encoding="utf8"))
         if b in block_ids and not simple_self_drop(lt, b):
-            scripted[b] = lt
+            scripted[b] = normalise_loot(lt)
     write_json(BP / "loot_tables/empty.json", {"pools": []})
     return scripted
 
@@ -301,13 +350,13 @@ def export_script_data(machine_recipes, scripted_loot, tags, items_info, block_s
     for sub in ("sifting", "sifting_fine", "distillation"):
         for f in (JDATA / "nookworks/loot_table" / sub).rglob("*.json"):
             key = sub + "/" + str(f.relative_to(JDATA / "nookworks/loot_table" / sub)).replace("\\", "/")[:-5]
-            data["loot"][key] = json.load(open(f, encoding="utf8"))
+            data["loot"][key] = normalise_loot(json.load(open(f, encoding="utf8")))
     for f in (JDATA / "nookworks/nookworks/poster").glob("*.json"):
         data["posters"][f.stem] = json.load(open(f, encoding="utf8"))
     from paths import VANILLA_JAVA
     pb = VANILLA_JAVA / "data/minecraft/loot_table/gameplay/piglin_bartering.json"
     if pb.exists():
-        data["loot"]["piglin_bartering"] = json.load(open(pb, encoding="utf8"))
+        data["loot"]["piglin_bartering"] = normalise_loot(json.load(open(pb, encoding="utf8")))
     data["smelting"] = smelting_table(tags)
     data["campfire"] = smelting_table(tags, ("campfire_cooking",))
     data["crafting9"] = nine_to_one(tags)
@@ -355,6 +404,30 @@ def nine_to_one(tags):
                 out.setdefault(o["item"], [bid(res["id"]), res.get("count", 1)])
     return out
 
+INV_SIZES = list(range(1, 19)) + [27]
+
+def inventory_entities():
+    """nookworks:inv_<n>: the invisible entity in a block that gives it a chest-like screen (scripts/lib/invent.js)."""
+    for n in INV_SIZES:
+        write_json(BP / f"entities/inv_{n}.json", {"format_version": "1.21.90", "minecraft:entity": {
+            "description": {"identifier": f"nookworks:inv_{n}", "is_spawnable": False, "is_summonable": True},
+            "components": {
+                "minecraft:inventory": {"container_type": "container", "inventory_size": n, "private": False, "restrict_to_owner": False},
+                "minecraft:collision_box": {"width": 1.04, "height": 1.04},
+                "minecraft:physics": {"has_gravity": False, "has_collision": False},
+                "minecraft:pushable": {"is_pushable": False, "is_pushable_by_piston": False},
+                "minecraft:knockback_resistance": {"value": 1},
+                "minecraft:health": {"value": 1, "max": 1},
+                "minecraft:damage_sensor": {"triggers": [{"cause": "all", "deals_damage": "no"}]},
+                "minecraft:nameable": {"always_show": False, "allow_name_tag_renaming": False},
+                "minecraft:persistent": {},
+                "minecraft:fire_immune": {},
+                "minecraft:type_family": {"family": ["nookworks_inv", "inanimate"]}}}})
+        write_json(RP / f"entity/inv_{n}.entity.json", {"format_version": "1.10.0", "minecraft:client_entity": {"description": {
+            "identifier": f"nookworks:inv_{n}", "materials": {"default": "entity_alphatest"},
+            "textures": {"default": "textures/nookworks/misc/blank"}, "geometry": {"default": "geometry.nookworks.empty"},
+            "render_controllers": ["controller.render.default"]}}})
+
 def _patch_data(key, value):
     f = BP / "scripts/generated/data.js"
     t = f.read_text(encoding="utf8").rstrip().rstrip(";")
@@ -395,10 +468,34 @@ def main():
     block_states = convert_blocks.run(meta)
     block_ids = set(block_states)
     items, items_info = convert_items.convert(block_ids, lang_keys)
+    wood_tags = {"minecraft:planks": 15, "minecraft:logs": 15, "minecraft:logs_that_burn": 15, "minecraft:wooden_slabs": 7.5}
+    terrain = convert_blocks.terrain
+    for tag, fuel in wood_tags.items():
+        for jid in tags.items(tag):
+            iid = jid.split(":")[1]
+            if not jid.startswith("nookworks:") or iid not in block_states:
+                continue
+            it = items.setdefault(iid, {})
+            if "block" in it or not it.get("components"):
+                blk = json.load(open(BP / f"blocks/{iid}.json", encoding="utf8"))["minecraft:block"]["components"]
+                mi = blk.get("minecraft:material_instances", {})
+                tkey = (mi.get("north") or mi.get("*") or {}).get("texture")
+                ikey = "nwb_" + iid
+                convert_items.item_tex[ikey] = terrain.get(tkey, "textures/misc/missing_texture")
+                it.pop("block", None)
+                it["components"] = {"minecraft:display_name": {"value": f"block.nookworks.{iid}"}, "minecraft:icon": ikey,
+                                    "minecraft:block_placer": {"block": f"nookworks:{iid}", "replace_block_item": True}}
+            c = it["components"]
+            c.setdefault("minecraft:tags", {"tags": []})["tags"].append(tag)
+            c["minecraft:fuel"] = {"duration": fuel}
     for iid, it in items.items():
         bp_ = it.get("components", {}).get("minecraft:block_placer")
         if bp_ and iid in PLANTS_ON:
             bp_["use_on"] = PLANTS_ON[iid]
+        if iid in ("vegetable_oil_bucket", "biodiesel_bucket"):
+            it.setdefault("components", {})["minecraft:fuel"] = {"duration": 800}
+        if iid in ("dawnwood_sapling", "dawnwood_leaves", "rare_seed", "corn_kernels", "sunflower_seeds", "rice_bran", "oil_cake") and "components" in it:
+            it["components"]["minecraft:compostable"] = {"composting_chance": 30 if "leaves" in iid or "seed" in iid or "kernels" in iid else 65}
         tc = tool_items.components(iid)
         if tc and "components" in it:
             it["components"].update(tc)
@@ -421,6 +518,9 @@ def main():
     machine, nrec = convert_recipes(tags)
     export_script_data(machine, scripted_loot, tags, items_info, block_states, lang_keys)
     _patch_data("posterIndex", poster_index)
+    ja = json.load(open(JASSETS / "lang/ja_jp.json", encoding="utf8"))
+    _patch_data("nameJa", {b: ja.get(f"block.nookworks.{b}") or ja.get(f"item.nookworks.{b}") or b for b in block_ids})
+    inventory_entities()
     copy_overlay()
     if (JASSETS / "../../pack.png").exists():
         pass

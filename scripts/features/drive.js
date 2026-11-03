@@ -1,9 +1,10 @@
 // Motor, Drive Wheels and belts (docs/java_spec.md §8). A powered Motor turns once every 10 ticks: the hand machine
+import { redstoneIn } from "../lib/blocks.js";
 // at its shaft, or a Drive Wheel there and everything that wheel reaches by belts and shared axles, up to 8 machines,
 // 20 FE/t each with work (2 FE/t idle). Belts: use Rope (8 blocks) or Thin Chain (16) on one wheel then another;
 // 2 items per block of length. Sneak + empty hand on a wheel takes its belts off.
 import { world, system, ItemStack } from "@minecraft/server";
-import { defineMachine, machines, useEnergy } from "../lib/machine.js";
+import { defineMachine, machines, useEnergy, withSlots } from "../lib/machine.js";
 import { onBlock, TICK } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
 import { DIRS, OPPOSITE, add, blockAt, held, isCreative, tr, actionbar, safe, setStates, state, posKey, parseKey } from "../lib/util.js";
@@ -48,7 +49,7 @@ function driven(start) {
 defineMachine("motor", {
   energy: { cap: 10000, in: true },
   work({ block, d }) {
-    if ((block.getRedstonePower?.() ?? 0) > 0) return "redstone";
+    if (redstoneIn(block) > 0) return "redstone";
     const f = dirOf(block);
     const shaft = blockAt(block.dimension, add(block.location, DIRS[f]));
     let targets = [];
@@ -56,8 +57,7 @@ defineMachine("motor", {
     else if (shaft?.typeId === WHEEL) targets = driven(shaft);
     const working = targets.filter((m) => {
       const spec = machines.get(m.typeId);
-      const md = spec.data(m);
-      return !!md.slots?.[0];
+      return withSlots(spec, m, (md) => !!md.slots?.[0]);
     });
     const cost = Math.ceil((working.length ? 20 * working.length : 2) * setting("machineEnergy")) * TICK;
     if (!useEnergy(d, cost)) {
@@ -68,7 +68,7 @@ defineMachine("motor", {
     if (shaft?.typeId === WHEEL) setStates(shaft, { turning: working.length > 0 });
     for (const m of working) {
       const spec = machines.get(m.typeId);
-      spec.crank(m, spec.data(m));
+      withSlots(spec, m, (md) => spec.crank(m, md));
     }
     return working.length ? "running" : "idle";
   },

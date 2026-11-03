@@ -1,8 +1,9 @@
 // Tanks, pipes, valves and experience (docs/java_spec.md §3-5). Pipes carry no stock of their own here: a holder
+import { redstoneIn } from "../lib/blocks.js";
 // that gives pushes through the pipe network into holders that take.
 import { world, system, ItemStack } from "@minecraft/server";
 import { defineMachine } from "../lib/machine.js";
-import { onBlock, TICK } from "../lib/blocks.js";
+import { onBlock, TICK, bump } from "../lib/blocks.js";
 import { DIRS, add, blockAt, held, state, setStates, safe } from "../lib/util.js";
 import { pushFluid, drain, fill } from "../lib/fluids.js";
 import * as store from "../lib/store.js";
@@ -12,9 +13,11 @@ const level7 = (n, cap) => (n <= 0 ? 0 : Math.max(1, Math.min(6, Math.round((6 *
 
 // ---- Copper Tank: 16,000 mB, any one liquid but mercury; pours 1,000 mB/t into what is below; gives to pipes
 defineMachine("copper_tank", {
+  keepsContents: true,
   tanks: { main: { cap: 16000, accepts: (f) => f !== "mercury" && f !== "experience", gives: true } },
   work({ block, d }) {
     const t = d.tanks.main;
+    if (t.n > 0 && t.f) drain(t, pushFluid(block, t.f, Math.min(t.n, 100 * TICK), { consumersOnly: true }));
     if (t.n > 0) {
       const below = blockAt(block.dimension, add(block.location, DIRS.down));
       if (below?.typeId === "nookworks:copper_tank") {
@@ -32,26 +35,32 @@ defineMachine("copper_tank", {
 
 // ---- Mercury Tank: 16,000 mB of mercury
 defineMachine("mercury_tank", {
+  keepsContents: true,
   tanks: { main: { cap: 16000, accepts: (f) => f === "mercury", gives: true } },
   work({ block, d }) {
-    setStates(block, { level: level7(d.tanks.main.n, 16000) });
+    const t = d.tanks.main;
+    if (t.n > 0) drain(t, pushFluid(block, "mercury", Math.min(t.n, 100 * TICK), { consumersOnly: true }));
+    setStates(block, { level: level7(t.n, 16000) });
     return "idle";
   },
 });
 
 // ---- Valve: an empty hand opens/shuts it; a redstone signal coming on opens, going off shuts
 onBlock("valve", {
+  placedBy: ({ block }) => setStates(block, { open: true }),
   interact: ({ block, player }) => {
     if (held(player)) return;
     setStates(block, { open: !state(block, "open") });
+    bump();
     block.dimension.playSound("random.lever_click", block.location);
   },
   tick: ({ block }) => {
-    const p = (block.getRedstonePower?.() ?? 0) > 0;
+    const p = redstoneIn(block) > 0;
     const d = store.get(block, () => ({ p }));
     if (p !== d.p) {
       d.p = p;
       setStates(block, { open: p });
+      bump();
       store.save(block);
     }
   },
@@ -59,6 +68,7 @@ onBlock("valve", {
 
 // ---- Experience Tank: 16,000 mB (20 mB a point); its tap (empty hand) pours 5 points a tick as orbs
 defineMachine("experience_tank", {
+  keepsContents: true,
   tanks: { main: { cap: 16000, accepts: (f) => f === "experience", gives: true } },
   interact({ block, player, d }) {
     if (held(player)) return false;
@@ -67,6 +77,7 @@ defineMachine("experience_tank", {
   },
   work({ block, d }) {
     const t = d.tanks.main;
+    if (!state(block, "open") && t.n > 0) drain(t, pushFluid(block, "experience", Math.min(t.n, 100 * TICK), { consumersOnly: true }));
     if (state(block, "open") && t.n >= 20) {
       const pts = Math.min(5 * TICK, Math.floor(t.n / 20));
       drain(t, pts * 20);
@@ -75,12 +86,11 @@ defineMachine("experience_tank", {
     setStates(block, { level: level7(t.n, 16000) });
     return "idle";
   },
-  broken: ({ block, dim, d }) => orbs(dim, block.center(), Math.floor((d.tanks?.main?.n ?? 0) / 20)),
 });
 
 export function orbs(dim, pos, points) {
   // an orb entity per few points (Bedrock xp_orb gives 1-? each); summon the vanilla way
-  let n = Math.min(points, 400);
+  let n = Math.min(points, 800);
   while (n > 0) {
     try {
       dim.spawnEntity("minecraft:xp_orb", pos);
@@ -96,7 +106,7 @@ defineMachine("absorption_pad", {
   tanks: { main: { cap: 2000, accepts: (f) => f === "experience", gives: true } },
   work({ block, d }) {
     const t = d.tanks.main;
-    if ((block.getRedstonePower?.() ?? 0) > 0) return "redstone";
+    if (redstoneIn(block) > 0) return "redstone";
     const c = block.center();
     for (const orb of block.dimension.getEntities({ type: "minecraft:xp_orb", location: c, maxDistance: 6 })) {
       if (t.n + 20 > 2000) break;

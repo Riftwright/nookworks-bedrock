@@ -3,12 +3,13 @@
 // replacement is described in GAPS.md.
 import { world, system, ItemStack } from "@minecraft/server";
 import { ModalFormData, ActionFormData } from "@minecraft/server-ui";
-import { defineMachine, useEnergy, putOut, itemText } from "../lib/machine.js";
+import { defineMachine, useEnergy, putOut, itemText, fits } from "../lib/machine.js";
 import { onBlock, TICK } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
 import { unpackItem } from "../lib/store.js";
 import { DIRS, OPPOSITE, add, blockAt, held, setHeld, isCreative, tr, actionbar, safe, setStates, state, posKey, parseKey, facing } from "../lib/util.js";
 import { deliverBelow, takeFromSlot, containerOf } from "../lib/inv.js";
+import { containerOfBlock } from "../lib/invent.js";
 import { drain } from "../lib/fluids.js";
 import { roll } from "../lib/loot.js";
 import { DATA } from "../generated/data.js";
@@ -42,6 +43,13 @@ defineMachine("repair_box", {
     if (d.tanks.xp.n < 20) return "no_fluid";
     if (!useEnergy(d, E(200))) return "no_power";
     drain(d.tanks.xp, 20);
+    const c = containerOfBlock(block, false);
+    const real = c?.getItem(worst);
+    const dur = real?.getComponent("minecraft:durability");
+    if (dur) {
+      dur.damage = Math.max(0, dur.damage - 5);
+      c.setItem(worst, real);
+    }
     d.slots[worst].dmg = Math.max(0, d.slots[worst].dmg - 5);
     return "running";
   },
@@ -155,7 +163,9 @@ defineMachine("spawn_egg_brewer", {
   accepts: (d, p, i) => [p.id === "nookworks:mob_bottle" && !!p.dp?.mob, p.id === "minecraft:egg", p.id === "minecraft:blaze_powder"][i],
   work({ d }) {
     const bottle = d.slots[0];
-    const egg = bottle && `${bottle.dp.mob}_spawn_egg`;
+    const egg = bottle?.dp?.mob && `${bottle.dp.mob}_spawn_egg`;
+    if (!egg) return "idle";
+    if (!fits(d, 3, [{ id: egg, n: 1 }])) return "blocked";
     if (!bottle || !d.slots[1] || (!(d.brews > 0) && !d.slots[2])) {
       d.progress = 0;
       return "idle";
@@ -197,6 +207,7 @@ onBlock("spawner_link_receiver", {
     if (!s) return;
     pairing.delete(player.id);
     const d = store.get(block, () => ({ senders: [] }));
+    d.senders ??= [];
     if (!d.senders.includes(s)) d.senders.push(s);
     store.save(block);
     actionbar(player, tr("nookworks.bedrock.linked", d.senders.length));
@@ -210,7 +221,7 @@ defineMachine("spawner_controller", {
   buttons: [{ label: { rawtext: [tr("nookworks.bedrock.settings")] }, run: ({ block, player, d }) => system.run(() => spawnerSettings(block, player, d)) }],
   work({ block, d }) {
     const recv = blockAt(block.dimension, add(block.location, DIRS.down));
-    if (recv?.typeId !== "nookworks:spawner_link_receiver" || !d.on || !d.slots[0]) return "idle";
+    if (recv?.typeId !== "nookworks:spawner_link_receiver" || !d.on || !d.slots[0]?.dp?.mob) return "idle";
     const rd = store.get(recv, () => ({ senders: [], fe: 0 }));
     d.t += TICK;
     if (d.t < d.interval) return "running";
@@ -288,14 +299,15 @@ defineMachine("trading_counter", {
     d.t = 0;
     const v = counterVillager(block);
     if (!v) return "idle";
-    const prof = v.getComponent("minecraft:mark_variant")?.value ?? 0;
+    const prof = v.getComponent("minecraft:variant")?.value ?? 0;
     for (const i of d.ticked ?? []) {
       const tr_ = TRADES[prof]?.[i];
       if (!tr_) continue;
       const [want, wn, give, gn] = tr_;
       const have = d.slots.slice(0, 9).reduce((s, x) => s + (x?.id === want ? x.n : 0), 0);
       if (have < wn) continue;
-      if (putOut(d, [9, 10, 11, 12, 13, 14, 15, 16, 17], { id: give, n: gn }) > 0) continue;
+      if (!fits(d, [9, 10, 11, 12, 13, 14, 15, 16, 17], [{ id: give, n: gn }])) continue;
+      putOut(d, [9, 10, 11, 12, 13, 14, 15, 16, 17], { id: give, n: gn });
       let left = wn;
       for (let k = 0; k < 9 && left; k++) if (d.slots[k]?.id === want) left -= takeFromSlot(d.slots, k, left).n;
       return "running";
@@ -305,7 +317,7 @@ defineMachine("trading_counter", {
 });
 async function tradeForm(block, player, d) {
   const v = counterVillager(block);
-  const prof = v?.getComponent("minecraft:mark_variant")?.value ?? 0;
+  const prof = v?.getComponent("minecraft:variant")?.value ?? 0;
   const list = TRADES[prof] ?? [];
   if (!list.length) return actionbar(player, tr("nookworks.bedrock.no_villager"));
   const f = new ModalFormData().title({ rawtext: [tr("block.nookworks.trading_counter")] });
@@ -327,10 +339,13 @@ defineMachine("barter_terminal", {
     if (!piglins.length || !d.slots[0]) return "idle";
     if (!useEnergy(d, E(20) * TICK)) return "no_power";
     d.t = (d.t ?? 0) + TICK * piglins.length;
-    while (d.t >= 119 && d.slots[0]) {
+    while (d.t >= 119 && d.slots[0]?.id === "minecraft:gold_ingot") {
+      d.pending ??= roll("piglin_bartering");
+      if (!fits(d, [2, 3, 4, 5, 6, 7, 8, 9, 10], d.pending)) return "blocked";
       d.t -= 119;
       takeFromSlot(d.slots, 0, 1);
-      for (const o of roll("piglin_bartering")) putOut(d, [2, 3, 4, 5, 6, 7, 8, 9, 10], o);
+      for (const o of d.pending) putOut(d, [2, 3, 4, 5, 6, 7, 8, 9, 10], o);
+      d.pending = null;
     }
     return "running";
   },

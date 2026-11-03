@@ -7,7 +7,7 @@ import { defineMachine, useEnergy, putOut } from "../lib/machine.js";
 import { TICK } from "../lib/blocks.js";
 import { DATA } from "../generated/data.js";
 import { takeFromSlot } from "../lib/inv.js";
-import { held, setHeld, isCreative, tr, safe } from "../lib/util.js";
+import { held, setHeld, isCreative, tr, safe, blockAt, isSolidBlock } from "../lib/util.js";
 import { setting } from "./settings.js";
 
 const P = DATA.posterIndex;
@@ -141,8 +141,8 @@ system.runInterval(
         if (!HUNG.test(ent.typeId)) continue;
         const w = ent.getDynamicProperty("wall");
         if (!w) continue;
-        const b = dim.getBlock(JSON.parse(w));
-        if (b && b.isAir) takeDown(ent);
+        const b = blockAt(dim, JSON.parse(w));
+        if (b && !isSolidBlock(b)) takeDown(ent);
       }
   }, "poster walls"),
   40

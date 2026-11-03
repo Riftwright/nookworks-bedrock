@@ -1,7 +1,7 @@
 // Moving items between our blocks (slots kept as packed items in block data) and vanilla containers.
 import { ItemStack } from "@minecraft/server";
-import { DIRS, add, blockAt, center } from "./util.js";
-import { packItem, unpackItem, sameItem, maxStack } from "./store.js";
+import { DIRS, add, blockAt, center, isSolidBlock } from "./util.js";
+import { packItem, unpackItem, sameItem, maxStack, packable } from "./store.js";
 
 const HOPPER_FACING = { 0: "down", 2: "north", 3: "south", 4: "west", 5: "east" };
 
@@ -67,25 +67,35 @@ export function pushInto(container, p) {
   return left;
 }
 
-/** Where a machine puts what it made: the container below (vanilla, or one of ours that accepts), else dropped
- * out below. Returns the count that could not go anywhere (only when `noDrop`). */
-export function deliverBelow(block, p, { noDrop = false, dir = "down" } = {}) {
+/** Where a machine puts what it made (Java's MachineIO.deliverBelow): into the container below, or the machine of
+ * ours below; with no container there, dropped out where there is room - below, else on top, else beside. A full
+ * container or machine below makes it wait. Returns the count left (still in the machine). */
+export function deliverBelow(block, p, { noDrop = false, dir = "down", onlyDir = false } = {}) {
   const below = blockAt(block.dimension, add(block.location, DIRS[dir]));
-  let left = p.n;
+  if (!below) return p.n;
   const c = containerOf(below);
-  if (c) left = pushInto(c, p);
-  else if (below && acceptors.has(below.typeId)) left = acceptors.get(below.typeId)(below, { ...p, n: left }, dir);
-  if (left > 0 && !noDrop && (!below || below.isAir || !c)) {
-    const pos = add(block.location, DIRS[dir]);
+  if (c) return pushInto(c, p);
+  if (acceptors.has(below.typeId)) return acceptors.get(below.typeId)(below, { ...p }, dir);
+  if (noDrop) return p.n;
+  const order = onlyDir ? [dir] : [dir, "up", "north", "south", "east", "west", "down"];
+  for (const d of order) {
+    const at = blockAt(block.dimension, add(block.location, DIRS[d]));
+    if (!at || !(at.isAir || at.isLiquid || !solidish(at))) continue;
+    let left = p.n;
     while (left > 0) {
       const s = unpackItem({ ...p, n: left });
       if (!s) break;
-      block.dimension.spawnItem(s, { x: pos.x + 0.5, y: pos.y + (dir === "down" ? 0.7 : 0.5), z: pos.z + 0.5 });
+      const q = at.location;
+      block.dimension.spawnItem(s, { x: q.x + 0.5, y: q.y + (d === "down" ? 0.6 : 0.3), z: q.z + 0.5 });
       left -= s.amount;
     }
     return 0;
   }
-  return left;
+  return p.n;
+}
+
+function solidish(b) {
+  return isSolidBlock(b);
 }
 
 /** Our blocks that take items pushed into them: typeId -> (block, packed, fromDir) => leftover. */
@@ -105,7 +115,7 @@ export function pullFromHoppers(block, accept, max = 1) {
     if (!c) continue;
     for (let i = 0; i < c.size; i++) {
       const s = c.getItem(i);
-      if (!s) continue;
+      if (!s || !packable(s)) continue;
       const p = packItem(s);
       p.n = Math.min(p.n, max);
       const took = accept(p);

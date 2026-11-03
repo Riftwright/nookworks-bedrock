@@ -50,7 +50,6 @@ system.runInterval(
       if (b?.typeId !== "nookworks:rope") continue;
       if (p.isJumping) p.addEffect("levitation", 4, { amplifier: 2, showParticles: false });
       else p.addEffect("slow_falling", 6, { amplifier: 0, showParticles: false });
-      if (p.isSneaking) p.addEffect("levitation", 3, { amplifier: 255, showParticles: false });
     }
   }, "rope climb"),
   2

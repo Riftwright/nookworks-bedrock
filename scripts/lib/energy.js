@@ -25,6 +25,7 @@ export function reach(block) {
   const out = [];
   const queue = [block.location];
   let steps = 0;
+  let partial = false;
   while (queue.length && steps++ < 2048) {
     const p = queue.shift();
     for (const d of Object.values(DIRS)) {
@@ -33,12 +34,15 @@ export function reach(block) {
       if (seen.has(qk)) continue;
       seen.add(qk);
       const b = blockAt(dim, q);
-      if (!b) continue;
+      if (!b) {
+        partial = true; // part of it unloaded: walk again next time
+        continue;
+      }
       if (b.typeId === CABLE) queue.push(q);
       else if (holders.has(b.typeId)) out.push(qk);
     }
   }
-  cache.set(k, { v: worldVersion(), list: out });
+  if (!partial) cache.set(k, { v: worldVersion(), list: out });
   return out;
 }
 

@@ -1,5 +1,5 @@
 // The mercury chain (docs/java_spec.md §3): Sealed Retort, Stirring Tank, Vacuum Distiller.
-import { defineMachine, useEnergy, putOut } from "../lib/machine.js";
+import { defineMachine, useEnergy, putOut, fits } from "../lib/machine.js";
 import { TICK } from "../lib/blocks.js";
 import { DATA } from "../generated/data.js";
 import { dataMapLookup, matches, bedrockId } from "../lib/ids.js";
@@ -45,6 +45,8 @@ defineMachine("retort", {
     d.progress += TICK;
     if (d.progress >= T(100)) {
       d.progress = 0;
+      const outs = [v.byproduct && { id: bedrockId(v.byproduct), n: v.count ?? 1 }, v.remainder && !boilWater && { id: bedrockId(v.remainder), n: 1 }].filter(Boolean);
+      if (!fits(d, [3, 4], outs)) return "blocked";
       if (boilWater) drain(d.tanks.water, 1000);
       else takeFromSlot(d.slots, 0, 1);
       for (const i of used) takeFromSlot(d.slots, i, 1);
@@ -87,7 +89,8 @@ defineMachine("stirring_tank", {
     else if (s.id === "nookworks:methanol" && d.tanks.oil.n >= 250 && d.tanks.biodiesel.n + 250 <= 1000 && (d.catalyst > 0 || d.slots[1])) job = "biodiesel";
     else if (matches("#minecraft:convertable_to_mud", s.id) && d.tanks.water.n >= 250) job = "mud";
     if (!job) return "idle";
-    if (d.slots[2] && job !== "biodiesel" && d.slots[2].n >= 64) return "blocked";
+    const out = job === "amalgam" ? { id: bedrockId(am.result), n: am.count ?? 1 } : job === "mud" ? { id: "minecraft:mud", n: 1 } : { id: "minecraft:glass_bottle", n: 1 };
+    if (!fits(d, 2, [out])) return "blocked";
     if (!useEnergy(d, E(20) * TICK)) return "no_power";
     d.progress += TICK;
     if (d.progress < T(80)) return "running";
@@ -135,8 +138,14 @@ defineMachine("distiller", {
     if (!useEnergy(d, E(60) * TICK)) return "no_power";
     d.progress += TICK;
     if (d.progress < T(120)) return "running";
+    d.pending ??= (v.loot_table ? roll(v.loot_table) : [{ id: bedrockId(v.result), n: (v.count ?? 1) + (Math.random() < (v.bonus_chance ?? 0) ? v.bonus ?? 0 : 0) }]).concat(Math.random() < (v.velarium_chance ?? 0) ? [{ id: "nookworks:velarium_nugget", n: 1 }] : []);
+    if (!fits(d, [1, 2, 3, 4], d.pending)) return "blocked";
     d.progress = 0;
     takeFromSlot(d.slots, 0, 1);
+    for (const o of d.pending) putOut(d, [1, 2, 3, 4], o);
+    d.pending = null;
+    if (v.mercury_returned) fill(d.tanks.mercury, 4000, "mercury", v.mercury_returned);
+    return "running";
     const outs = v.loot_table ? roll(v.loot_table) : [{ id: bedrockId(v.result), n: (v.count ?? 1) + (Math.random() < (v.bonus_chance ?? 0) ? v.bonus ?? 0 : 0) }];
     for (const o of outs) putOut(d, [1, 2, 3, 4], o);
     if (Math.random() < (v.velarium_chance ?? 0)) putOut(d, [1, 2, 3, 4], { id: "nookworks:velarium_nugget", n: 1 });

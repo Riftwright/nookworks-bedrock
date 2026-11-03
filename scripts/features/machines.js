@@ -1,6 +1,6 @@
 // Generators and the FE machines (docs/java_spec.md §1-2), on the framework in lib/machine.js.
 // Times are counted in game ticks; work() runs every TICK (10) ticks and does TICK ticks' worth.
-import { defineMachine, useEnergy, putOut, spaceFor } from "../lib/machine.js";
+import { defineMachine, useEnergy, putOut, spaceFor, fits } from "../lib/machine.js";
 import { TICK } from "../lib/blocks.js";
 import { DATA } from "../generated/data.js";
 import { dataMapLookup, bedrockId, matches, tagItems } from "../lib/ids.js";
@@ -48,7 +48,7 @@ defineMachine("generator", {
     if (d.fe + per * TICK > 50000 && !d.burn) return "full";
     if (!d.burn) {
       const s = d.slots[0];
-      if (s && burnTime(s.id)) {
+      if (s && burnTime(s.id) && (!EMPTY_OF[s.id] || fits(d, 1, [{ id: EMPTY_OF[s.id], n: 1 }]))) {
         d.burn = d.burnMax = burnTime(s.id);
         takeFromSlot(d.slots, 0, 1);
         if (EMPTY_OF[s.id]) putOut(d, 1, { id: EMPTY_OF[s.id], n: 1 });
@@ -75,7 +75,7 @@ defineMachine("diesel_generator", {
     const s = d.slots[0];
     if (s) {
       const n = s.id.endsWith("_bucket") ? 1000 : 250;
-      if (4000 - d.tanks.fuel.n >= n) {
+      if (EMPTY_OF[s.id] && 4000 - d.tanks.fuel.n >= n && fits(d, 1, [{ id: EMPTY_OF[s.id], n: 1 }])) {
         fill(d.tanks.fuel, 4000, "biodiesel", n);
         takeFromSlot(d.slots, 0, 1);
         putOut(d, 1, { id: EMPTY_OF[s.id], n: 1 });
@@ -138,6 +138,7 @@ function crushResult(id) {
   if (!v) return null;
   let r = v.result;
   if (r.startsWith("#")) r = [...tagItems(r.slice(1))][0];
+  if (!r) return null; // a tag result with nothing in it: that recipe is off (Java's rule)
   return { id: bedrockId(r), n: v.count ?? 1 };
 }
 processor("crusher", { fe: 20, ticks: 60, recipe: crushResult });
@@ -214,6 +215,7 @@ defineMachine("recycler", {
       }
       let amount = 0.5 * v.metal * frac * (v.kind === "gold" ? 9 : 1);
       let n = Math.floor(amount) + (Math.random() < amount % 1 ? 1 : 0);
+      if (!fits(d, [1, 2], [{ id: v.kind === "gold" ? "minecraft:gold_nugget" : "nookworks:scrap", n }])) return "blocked";
       takeFromSlot(d.slots, 0, 1);
       if (n > 0) putOut(d, [1, 2], { id: v.kind === "gold" ? "minecraft:gold_nugget" : "nookworks:scrap", n });
     }
@@ -244,11 +246,12 @@ defineMachine("electrolytic_cell", {
     d.progress += TICK;
     if (d.progress >= T(100)) {
       d.progress = 0;
+      let n = v.count ?? 1;
+      if (v.bonus_chance && Math.random() < v.bonus_chance) n += v.bonus ?? 1;
+      if (!fits(d, [1, 2], [{ id: bedrockId(v.result), n }])) return "blocked";
       drain(d.tanks.water, v.water ?? 0);
       if (v.mercury) drain(d.tanks.mercury, v.mercury);
       takeFromSlot(d.slots, 0, 1);
-      let n = v.count ?? 1;
-      if (v.bonus_chance && Math.random() < v.bonus_chance) n += v.bonus ?? 1;
       // weathered copper -> its unweathered form: the result names the block itself
       putOut(d, [1, 2], { id: bedrockId(v.result), n });
     }
@@ -264,7 +267,7 @@ defineMachine("water_pump", {
     if (d.tanks.water.n > 0) d.tanks.water.n -= pushFluid(block, "water", Math.min(d.tanks.water.n, 100 * TICK));
     if (d.tanks.water.n <= 0) d.tanks.water.f = null;
     const below = blockAt(block.dimension, add(block.location, DIRS.down));
-    if (!below || below.typeId !== "minecraft:water") return "idle";
+    if (!below || below.typeId !== "minecraft:water" || (below.permutation.getState("liquid_depth") ?? 0) !== 0) return "idle";
     if (d.tanks.water.n > 3000) return "full";
     if (!useEnergy(d, E(10) * TICK)) return "no_power";
     d.progress += TICK;
@@ -298,6 +301,7 @@ export function sift(id, mesh) {
 defineMachine("sifter", {
   slots: 11, inputs: [0, 10], outputs: [1, 2, 3, 4, 5, 6, 7, 8, 9],
   accepts: (d, p, i) => (i === 0 ? SIFTABLE.has(p.id) : p.id === "nookworks:brass_mesh"),
+  claimsItem: (h) => SIFTABLE.has(h.typeId),
   progressMax: ({ d }) => setting("sifterTicks") * (d.slots[10] ? 2 : 1),
   interact({ block, player, d }) {
     const h = player.getComponent("minecraft:equippable").getEquipment("Mainhand");
@@ -324,9 +328,12 @@ defineMachine("sifter", {
     if (d.slots.slice(1, 10).every((x) => x)) return "blocked";
     d.progress += TICK;
     if (d.progress >= setting("sifterTicks") * (d.slots[10] ? 2 : 1)) {
+      d.pending ??= sift(s.id, !!d.slots[10]);
+      if (!fits(d, [1, 2, 3, 4, 5, 6, 7, 8, 9], d.pending)) return "blocked";
       d.progress = 0;
       takeFromSlot(d.slots, 0, 1);
-      for (const o of sift(s.id, !!d.slots[10])) putOut(d, [1, 2, 3, 4, 5, 6, 7, 8, 9], { id: o.id, n: o.n });
+      for (const o of d.pending) putOut(d, [1, 2, 3, 4, 5, 6, 7, 8, 9], { id: o.id, n: o.n });
+      d.pending = null;
     }
     return "running";
   },

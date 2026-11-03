@@ -30,8 +30,10 @@ def tex_key(tex_id):
             mc = JASSETS / "textures" / (p + ".png.mcmeta")
             if mc.exists():
                 meta = json.load(open(mc, encoding="utf8")).get("animation", {})
-                flipbooks.append({"flipbook_texture": "textures/nookworks/" + p, "atlas_tile": key,
-                                  "ticks_per_frame": meta.get("frametime", 1)})
+                fb = {"flipbook_texture": "textures/nookworks/" + p, "atlas_tile": key, "ticks_per_frame": meta.get("frametime", 1)}
+                if meta.get("interpolate"):
+                    fb["blend_frames"] = True
+                flipbooks.append(fb)
         return key
     path = vanilla_tex.resolve(p)
     if not path:
@@ -361,6 +363,41 @@ def visible_bbox(parts, env):
             lo[i] = min(lo[i], bb[0][i]); hi[i] = max(hi[i], bb[1][i])
     return (lo, hi) if any_ else None
 
+extra_geos = []
+_mineable = None
+
+def mineable_by(bid):
+    """Java's mineable/<tool> block tags -> Bedrock's is_<tool>_item_destructible block tags (tools dig them faster)."""
+    global _mineable
+    if _mineable is None:
+        _mineable = {}
+        for tool in ("pickaxe", "axe", "shovel", "hoe"):
+            f = JDATA / "minecraft/tags/block/mineable" / f"{tool}.json"
+            if f.exists():
+                for v in json.load(open(f, encoding="utf8")).get("values", []):
+                    v = v if isinstance(v, str) else v.get("id")
+                    if v.startswith("nookworks:"):
+                        _mineable.setdefault(v[10:], []).append(tool)
+    return _mineable.get(bid, [])
+
+def item_visual(bid):
+    """The block's item drawn from Java's item model (a button's flat inventory model, a die), not from the block's
+    first state."""
+    import convert_items
+    f = JASSETS / "items" / f"{bid}.json"
+    if not f.exists():
+        return None
+    mid = convert_items.first_model(json.load(open(f, encoding="utf8"))["model"])
+    if not mid or M.is_generated(M.load(mid)) or not M.load(mid)["elements"]:
+        return None
+    geo, vis, mats, kinds = geometry(bid + "_item", [(mid, 0, 0, "true", None)])
+    rm = render_method(kinds)
+    mi = {name: {"texture": tex_key(tex), "render_method": rm} for tex, name in mats.items()}
+    if not mi:
+        return None
+    mi["*"] = dict(next(iter(mi.values())))
+    return {"geometry": {"identifier": f"geometry.nookworks.{bid}_item"}, "material_instances": mi}, geo
+
 def box_permutations(sm, parts, default_bb, collides):
     """Selection/collision boxes for every state combination whose shape differs from the default one."""
     props = {k: v for k, v in sm.props.items() if k != "waterlogged"}
@@ -470,13 +507,36 @@ def convert_block(bid, bs, block_meta):
                       "components": {"minecraft:light_emission": light}})
     if jp.get("no_loot"):
         comps["minecraft:loot"] = "loot_tables/empty.json"
+    for tool in mineable_by(bid):
+        comps[f"tag:minecraft:is_{tool}_item_destructible"] = {}
+    if bid in behaviors.DROPS_AS:
+        other = behaviors.DROPS_AS[bid]
+        comps["minecraft:display_name"] = f"block.nookworks.{other}" if other else comps["minecraft:display_name"]
+        if not other:
+            comps["minecraft:loot"] = "loot_tables/empty.json"
+        else:
+            comps["minecraft:loot"] = f"loot_tables/blocks/{other}.json"
+            write_json(BP / f"loot_tables/blocks/{other}.json", {"pools": [{"rolls": 1, "entries": [{"type": "item", "name": f"nookworks:{other}"}]}]})
+    if bid.startswith("glazed_potted_"):
+        comps["minecraft:display_name"] = "block.nookworks.glazed_flower_pot"
+    if bid in behaviors.PLACED_ON:
+        comps["minecraft:placement_filter"] = {"conditions": [{"allowed_faces": ["up"], "block_filter": behaviors.PLACED_ON[bid]}]}
     for k, v in {**behaviors.extra_components(bid), **block_meta.get("components", {})}.items():
         comps[k] = v
-    if bid in behaviors.REDSTONE_WHEN:
+    if bid == "nested_timer":
+        # Java: the pulse powers only the block in front (bones are rotated, not the block, so one permutation a facing)
+        for f in ("north", "south", "east", "west"):
+            perms.append({"condition": f"{behaviors.REDSTONE_WHEN[bid]} && q.block_state('minecraft:cardinal_direction') == '{f}'",
+                          "components": {"minecraft:redstone_producer": {"power": 15, "strongly_powered_face": f, "connected_faces": [f]}}})
+    elif bid in behaviors.REDSTONE_WHEN:
         perms.append({"condition": behaviors.REDSTONE_WHEN[bid], "components": {"minecraft:redstone_producer": {"power": 15}}})
     if bid == "hub_stone":
         for pw in range(1, 16):
             perms.append({"condition": f"q.block_state('nookworks:power') == {pw}", "components": {"minecraft:redstone_producer": {"power": pw}}})
+    iv = item_visual(bid)
+    if iv:
+        comps["minecraft:item_visual"] = iv[0]
+        extra_geos.append(iv[1])
     block = {"format_version": "1.21.120", "minecraft:block": {"description": desc, "components": comps}}
     if perms:
         block["minecraft:block"]["permutations"] = perms
@@ -503,7 +563,14 @@ def run(block_meta_all):
         bid = f.stem
         bs = json.load(open(f, encoding="utf8"))
         if bid in behaviors.MODEL_OVERRIDE:
-            bs = {"variants": {"": {"model": behaviors.MODEL_OVERRIDE[bid]}}}
+            mo = behaviors.MODEL_OVERRIDE[bid]
+            if isinstance(mo, list):
+                bs = {"multipart": [{"apply": {"model": m}} for m in mo]}
+            elif "variants" in bs and all(v.get("model") if isinstance(v, dict) else True for v in bs["variants"].values()):
+                # keep the rotations, swap the model
+                bs = {"variants": {k: ({**(v[0] if isinstance(v, list) else v), "model": mo}) for k, v in bs["variants"].items()}}
+            else:
+                bs = {"variants": {"": {"model": mo}}}
         meta = block_meta_all.get(bid, {})
         block, geo, sound, sm = convert_block(bid, bs, meta)
         write_json(BP / f"blocks/{bid}.json", block)
@@ -513,5 +580,8 @@ def run(block_meta_all):
         out[bid] = {"states": block["minecraft:block"]["description"].get("states", {}),
                     "traits": {k: v["enabled_states"] for k, v in block["minecraft:block"]["description"].get("traits", {}).items()},
                     "props": sm.props}
+    for g in extra_geos:
+        gid = g["minecraft:geometry"][0]["description"]["identifier"].split(".")[-1]
+        write_json(RP / f"models/blocks/{gid}.geo.json", g)
     write_json(RP / "blocks.json", blocks_json)
     return out

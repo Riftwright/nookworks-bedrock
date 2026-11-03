@@ -5,7 +5,7 @@ replacement used. Japanese summary at the end.
 
 | Java | Why not on Bedrock | Bedrock replacement |
 |---|---|---|
-| Machine screens (slots, gauges, buttons) | No custom container screens for blocks | Empty-hand tap opens a form: status (energy, progress, tanks), a button per slot to take it out, "Put in" for the held item, the machine's own buttons (Print…, Settings, Trades). Tapping with an item the machine takes puts it straight in. Hoppers pointing in feed it; outputs go into the container below (or drop), as in Java. |
+| Machine screens (slots, gauges, buttons) | No custom container screens for blocks | An invisible entity with an inventory sits in each machine, crate and magnet chest: an empty-hand tap opens the game's own chest-like screen with the machine's slots; its title shows status, energy, progress and tanks. A tap with an item the machine takes (fuel, ore, a bucket on a tank) puts it in; sneak + tap opens a form with the machine's buttons (Print…, Settings, Trades) and status. Three hits break the block (it drops its contents). Things put in a slot where they don't belong are pushed back out. Hand machines turn with an empty-hand tap; sneak + tap opens them. |
 | Storage Barrel screen | Same | A form: contents paged (24 a page) with counts over 64; take 1 / a stack / 4 stacks / all; put in all of the held item or the whole inventory (hotbar kept); sort and reverse. |
 | Sort button on vanilla chests | Vanilla screens can't be changed | Sneak + empty hand on a chest, barrel or shulker box sorts it; again within 2 s sorts it the other way. Not the Ender Chest (scripts can't reach it). |
 | Custom fluids (oil, mercury, liquid experience as flowing blocks) | No custom fluids | Liquids are numbers (mB) in tanks. Buckets/bottles pour in and draw out by tapping. Placed mercury / liquid experience blocks are not made. |
@@ -30,9 +30,11 @@ replacement used. Japanese summary at the end.
 | Dawnwood boats | Boats can't take a new wood | They set down the game's own boat / chest boat. |
 | Standing Mirror's reflection | No render-to-texture | Shining glass only. |
 | Books drawn in piles/rows | Java draws them with a renderer | One book model; the books are kept and given back. |
-| Oil Can silencing vanilla doors | Vanilla sounds can't be stopped | Marks the block; our own (Dawnwood/Motor) sounds respect it. |
+| Oil Can silencing vanilla doors | Vanilla sounds can't be stopped | Works on Dawnwood doors, trapdoors and gates (and is refused elsewhere but on doors, gates, pistons and Motors). |
 | Fireproof Coating | No fire-spread event | Fire next to a coated block is put out at once. |
-| Collision shapes | One box per block, max 16 px | Boxed shapes; fences 1 block high. |
+| Collision shapes | One box per block, max 16 px | Boxed shapes; fences 1 block high. Models are cut to Bedrock's 30-pixel box (crops no longer sink a pixel; pots over a campfire lose their lower legs). |
+| Dice showing their face | Java draws it with a renderer | The roll is shown on the action bar to everyone near; the block shows one face. A redstone signal rolls it. |
+| Item data in barrels, sorters, hoppers into machines | Packed items keep id, count, name, lore, damage and enchantments only | Items whose data can't be kept (potions, written books, shulker boxes, maps, fireworks...) are left out of them rather than changed. Chest sort moves the stacks themselves, so nothing is lost there. |
 | Neighbour updates | No neighbour event | Shapes are worked out again when a player places or breaks a block next to them. |
 | Fuel values / furnace recipes for scripts | Not queryable | Tables: vanilla burn times; smelting recipes read from the Java data at build. |
 | Bedrock random ticks (⅓ of Java's) | — | Crop chances ×3. |

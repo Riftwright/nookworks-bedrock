@@ -7,6 +7,8 @@ import vanilla_tex
 
 item_tex = {}
 warnings = []
+# items whose data is kept on the stack (Bedrock allows that only on unstackable items)
+ONE_A_STACK = {"mob_bottle", "lode_pearl", "magnet", "advanced_magnet", "crate", "copper_tank", "mercury_tank", "experience_tank"}
 
 def scan_java():
     """id -> {stack, durability, food:(n,sat), fire, places: block id, effect}"""
@@ -85,6 +87,8 @@ def composite_icon(iid, layers):
     item_tex[key] = f"textures/nookworks/item_composite/{iid}"
     return key
 
+_want = None
+
 def first_model(d):
     t = d.get("type", "").replace("minecraft:", "")
     if t == "model":
@@ -92,7 +96,8 @@ def first_model(d):
     if t == "composite":
         return first_model(d["models"][0])
     if t == "condition":
-        return first_model(d["on_false"])
+        a, b = first_model(d["on_true"]), first_model(d["on_false"])
+        return a if a and _want and _want in a else b
     if t == "select":
         return first_model(d.get("fallback") or d["cases"][0]["model"])
     if t == "range_dispatch":
@@ -105,6 +110,8 @@ def icon_for(iid):
     f = JASSETS / "items" / f"{iid}.json"
     if not f.exists():
         return None, None
+    global _want
+    _want = iid
     mid = first_model(json.load(open(f, encoding="utf8"))["model"])
     if not mid:
         return None, None
@@ -128,9 +135,11 @@ def convert(block_ids, lang_keys):
     for iid in ids:
         d = info.get(iid, {})
         icon, kind = icon_for(iid)
-        is_block = iid in block_ids and d.get("places", iid) == iid
-        places = d.get("places") if d.get("places") in block_ids else (iid if iid in block_ids else None)
-        if is_block and kind == "model" and d.get("stack", 64) == 64:
+        # an item is its block's own item only when Java registers it as one (an ear of corn shares the corn crop's
+        # id but is food, planted as kernels)
+        is_block = iid in block_ids and d.get("places", iid if not d.get("food") else None) == iid
+        places = d.get("places") if d.get("places") in block_ids else (iid if is_block else None)
+        if is_block and kind == "model" and d.get("stack", 64) == 64 and iid not in ONE_A_STACK:
             items_out[iid] = {"block": iid}
             continue          # the block's own item, drawn from its geometry
         comps = {}
@@ -145,7 +154,7 @@ def convert(block_ids, lang_keys):
                 tex = M.resolve_tex(model, model["textures"].get("particle")) or \
                       next((M.resolve_tex(model, v) for v in model["textures"].values()), None)
             comps["minecraft:icon"] = icon_key(tex) if tex else icon_key("nookworks:item/" + iid)
-        comps["minecraft:max_stack_size"] = d.get("stack", 64)
+        comps["minecraft:max_stack_size"] = 1 if iid in ONE_A_STACK else d.get("stack", 64)
         if d.get("durability"):
             comps["minecraft:durability"] = {"max_durability": d["durability"]}
         if d.get("food"):

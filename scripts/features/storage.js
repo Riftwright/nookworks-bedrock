@@ -4,9 +4,10 @@ import { world, system, ItemStack } from "@minecraft/server";
 import { ActionFormData, ModalFormData } from "@minecraft/server-ui";
 import { onBlock } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
-import { packItem, unpackItem, sameItem, maxStack } from "../lib/store.js";
+import { packItem, unpackItem, sameItem, maxStack, packable } from "../lib/store.js";
 import { acceptors, containerOf, dropSlots } from "../lib/inv.js";
 import { itemText } from "../lib/machine.js";
+import { registerInv, entityOf, readSlots, writeSlots, removeQuietly, containerOfBlock } from "../lib/invent.js";
 import { DIRS, add, blockAt, held, setHeld, give, tr, isCreative, setStates, state, safe, consumeHeld } from "../lib/util.js";
 
 export const TIERS = { iron: [27, 2], gold: [54, 4], diamond: [81, 16], netherite: [108, 256], velarium: [135, 1024] };
@@ -22,7 +23,7 @@ function slotCap(tier, id) {
 }
 /** Puts a packed item in; returns what was left. */
 export function insert(block, d, p) {
-  if (NOT_INSIDE.test(p.id)) return p.n;
+  if (NOT_INSIDE.test(p.id) || !packable({ typeId: p.id })) return p.n;
   const tier = tierOf(block.typeId);
   const [slots] = TIERS[tier];
   let left = p.n;
@@ -87,8 +88,8 @@ onBlock(BARRELS, {
     open(block, player, 0);
   },
   beforeBreak: ({ block, player }) => {
-    const d = store.get(block);
-    if (d && stacks(d) > 256 && !isCreative(player)) {
+    const d = store.getKey(store.keyOf(block));
+    if (d && d.items && stacks(d) > 256 && !isCreative(player)) {
       system.run(() => player.sendMessage({ rawtext: [tr("message.nookworks.storage.too_full")] }));
       return true;
     }
@@ -173,6 +174,7 @@ async function open(block, player, page) {
   });
   const r = await f.show(player);
   if (r.canceled || r.selection === undefined) return;
+  if (!block.isValid || store.get(block) !== d) return;
   safe(acts[r.selection], "barrel form")();
 }
 
@@ -186,6 +188,7 @@ async function takeForm(block, d, player, i) {
   const r = await f.show(player);
   if (r.canceled || r.selection === undefined) return;
   const n = opts[r.selection];
+  if (!block.isValid || store.get(block) !== d) return; // broken while the form was open
   const got = take(block, d, i, n);
   if (got) giveMany(player, got);
   open(block, player, Math.floor(i / PAGE));
@@ -220,44 +223,44 @@ function depositInventory(block, d, player) {
   }
 }
 
-// ---- Crate: 9 slots, keeps its contents in its item (stack 1)
+// ---- Crate: 9 slots in its own screen; keeps what it holds in its item (stack 1)
 const CRATE = "nookworks:crate";
+registerInv("crate", { size: 9 });
 onBlock("crate", {
-  interact: ({ block, player }) => slotsForm(block, player, 9, "block.nookworks.crate", (p) => p.id !== CRATE && !NOT_INSIDE.test(p.id)),
+  place: ({ block }) => entityOf(block),
   broken: ({ block, dim, player }) => {
-    const d = store.getKey(store.keyOf(block));
-    if (!d?.slots?.some((s) => s)) return;
-    // the dropped crate (Bedrock's own drop) is replaced by one carrying the contents
-    const items = (dim ?? block.dimension).getEntities({ type: "minecraft:item", location: block.center(), maxDistance: 1.5 });
-    for (const it of items) {
-      const s = it.getComponent("minecraft:item")?.itemStack;
-      if (s?.typeId === CRATE) {
-        it.remove();
-        break;
-      }
+    const c = containerOfBlock(block, false);
+    const slots = [];
+    for (let i = 0; c && i < 9; i++) {
+      const s = c.getItem(i);
+      if (s && !packable(s)) {
+        (dim ?? block.dimension).spawnItem(s, block.center());
+        slots.push(null);
+      } else slots.push(s ? packItem(s) : null);
     }
+    removeQuietly(block);
+    if (player && isCreative(player) && !slots.some((x) => x)) return;
     const s = new ItemStack(CRATE, 1);
-    s.setDynamicProperty("contents", JSON.stringify(d.slots));
-    s.setLore([`§7${d.slots.filter((x) => x).length} / 9`]);
+    if (slots.some((x) => x)) {
+      s.setDynamicProperty("contents", JSON.stringify(slots));
+      s.setLore([`§7${slots.filter((x) => x).length} / 9`]);
+    }
     (dim ?? block.dimension).spawnItem(s, block.center());
   },
-  placedBy: ({ block, player }) => {
-    const h = held(player);
-    // the stack was already spent placing; the item in the hand slot is gone, so read the last used one
-  },
 });
-// a crate carrying contents: remember them when it is placed
+// a crate carrying contents: put them back in when it is placed
 world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
   if (e.itemStack?.typeId !== CRATE || !e.isFirstEvent) return;
   const raw = e.itemStack.getDynamicProperty("contents");
   if (!raw) return;
-  const face = e.blockFace;
-  const off = { Up: DIRS.up, Down: DIRS.down, North: DIRS.north, South: DIRS.south, East: DIRS.east, West: DIRS.west }[face];
+  const off = { Up: DIRS.up, Down: DIRS.down, North: DIRS.north, South: DIRS.south, East: DIRS.east, West: DIRS.west }[e.blockFace];
   const pos = add(e.block.location, off);
   const dim = e.block.dimension;
   system.run(() => {
-    const b = blockAt(dim, pos);
-    if (b?.typeId === CRATE) store.set(b, { slots: JSON.parse(raw) });
+    for (const p of [pos, e.block.location]) {
+      const b = blockAt(dim, p);
+      if (b?.typeId === CRATE) return void writeSlots(b, JSON.parse(raw));
+    }
   });
 });
 

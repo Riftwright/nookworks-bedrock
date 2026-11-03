@@ -2,7 +2,7 @@
 // state in the block JSON (tools/behaviors.py REDSTONE_WHEN).
 import { world, system } from "@minecraft/server";
 import { ModalFormData } from "@minecraft/server-ui";
-import { onBlock } from "../lib/blocks.js";
+import { onBlock, redstoneIn } from "../lib/blocks.js";
 import * as store from "../lib/store.js";
 import { DIRS, add, blockAt, held, tr, actionbar, safe, setStates, state, later, randInt } from "../lib/util.js";
 
@@ -10,11 +10,16 @@ import { DIRS, add, blockAt, held, tr, actionbar, safe, setStates, state, later,
 onBlock("hub_stone", {
   tick: ({ block }) => {
     let p = 0;
+    const own = state(block, "power") ?? 0;
     for (const d of Object.values(DIRS)) {
       const n = blockAt(block.dimension, add(block.location, d));
       if (!n || n.isAir) continue;
       if (n.typeId === "nookworks:hub_stone") p = Math.max(p, (state(n, "power") ?? 0) - 1);
-      else if (n.typeId !== "minecraft:redstone_wire") p = Math.max(p, n.getRedstonePower() ?? 0);
+      else {
+        const v = n.getRedstonePower() ?? 0;
+        // dust it powers itself reads one less than it gives: only dust at least as strong as it comes from elsewhere
+        if (n.typeId !== "minecraft:redstone_wire" || v >= own) p = Math.max(p, v);
+      }
     }
     setStates(block, { power: Math.max(0, Math.min(15, p)) });
   },
@@ -68,6 +73,18 @@ function announce(dim, pos, v, who) {
     p.onScreenDisplay.setActionBar({ rawtext: [tr("nookworks.bedrock.dice_rolled", who ?? "", ["", "⚀", "⚁", "⚂", "⚃", "⚄", "⚅"][v] + ` ${v}`)] });
 }
 onBlock("dice", {
+  tick: ({ block }) => {
+    const p = redstoneIn(block) > 0;
+    const d = store.get(block, () => ({}));
+    if (p && !d.p) {
+      const v = randInt(1, 6);
+      d.value = v;
+      block.dimension.playSound("random.click", block.location, { pitch: 0.8 });
+      later(20, () => announce(block.dimension, block.center(), v));
+    }
+    d.p = p;
+    store.save(block);
+  },
   interact: ({ block, player }) => {
     const v = randInt(1, 6);
     block.dimension.playSound("random.click", block.location, { pitch: 0.8 });

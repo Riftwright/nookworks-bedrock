@@ -2,7 +2,7 @@
 // states are worked out again whenever a block next to them is placed or broken. Java does this in
 // updateShape; Bedrock has no neighbour event for custom blocks, so placing/breaking stands in for it.
 import { world, system } from "@minecraft/server";
-import { DIRS, add, blockAt, setStates, id, safe } from "../lib/util.js";
+import { DIRS, add, blockAt, setStates, id, safe, isSolidBlock } from "../lib/util.js";
 import { onAnyBreak, onAnyPlace } from "../lib/blocks.js";
 
 /** typeId -> (block, dir, neighbourBlock) => state value for that direction (true/false or a string) */
@@ -50,10 +50,5 @@ export function changed(block) {
 // ---- common tests
 
 export function solid(nb) {
-  if (!nb || nb.isAir || nb.isLiquid) return false;
-  try {
-    return nb.isSolid ?? true;
-  } catch {
-    return true;
-  }
+  return isSolidBlock(nb);
 }

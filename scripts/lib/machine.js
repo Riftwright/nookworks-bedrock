@@ -17,10 +17,49 @@ import * as energy from "./energy.js";
 import { addToSlots, deliverBelow, pullFromHoppers, dropSlots, takeFromSlot, acceptors } from "./inv.js";
 import { held, setHeld, give, setStates, id, short, tr, isCreative, safe } from "./util.js";
 import { packItem, unpackItem } from "./store.js";
-import { ItemStack } from "@minecraft/server";
+import { ItemStack, world, system } from "@minecraft/server";
 import { FLUIDS, FILLED, filledOf, fill, drain, fluidName, registerFluidHolder } from "./fluids.js";
+import { DATA } from "../generated/data.js";
+import { registerInv, invs, entityOf, readSlots, writeSlots, dropAndRemove, title } from "./invent.js";
+
+const STATUS_JA = { running: "稼働中", idle: "待機", no_power: "電力なし", no_fuel: "燃料なし", blocked: "出力がいっぱい",
+  full: "満杯", redstone: "レッドストーンで停止", no_fluid: "液体なし" };
+
+/** The slots live in the block's inventory entity (the screen the player sees): read them in before a change... */
+function slotsIn(spec, block, d) {
+  if (!invs.has(spec.typeId)) return;
+  if (!entityOf(block, false)) {
+    // none yet (just placed, or lost): make it holding what the data holds, rather than reading an empty one
+    entityOf(block, true);
+    writeSlots(block, d.slots);
+    return;
+  }
+  const s = readSlots(block, spec.slots);
+  if (s) d.slots = s;
+}
+
+/** For code outside the machine that changes its slots (a Motor turning it, another machine...). */
+export function withSlots(spec, block, fn) {
+  const d = spec.data(block);
+  slotsIn(spec, block, d);
+  const r = fn(d);
+  slotsOut(spec, block, d);
+  store.save(block);
+  return r;
+}
+/** ...and write them back after. */
+function slotsOut(spec, block, d) {
+  if (invs.has(spec.typeId)) writeSlots(block, d.slots);
+}
 
 export const machines = new Map();
+const carried = new Map(); // player -> contents of the tank item they are setting down
+world.beforeEvents.playerInteractWithBlock.subscribe((e) => {
+  const s = e.itemStack;
+  if (!s || !machines.get(s.typeId)?.keepsContents) return;
+  const raw = s.getDynamicProperty("contents");
+  if (raw) carried.set(e.player.id, { ...JSON.parse(raw), t: system.currentTick });
+});
 
 export function defineMachine(name, spec) {
   const typeId = id(name);
@@ -52,22 +91,57 @@ export function defineMachine(name, spec) {
   };
   acceptors.set(typeId, (block, p) => {
     const d = spec.data(block);
+    slotsIn(spec, block, d);
     const slots = spec.inputs.filter((i) => !spec.accepts || spec.accepts(d, p, i));
     const left = addToSlots(d.slots, slots, p);
-    if (left !== p.n) store.save(block);
+    if (left !== p.n) {
+      slotsOut(spec, block, d);
+      store.save(block);
+    }
     return left;
   });
+  if ((spec.slots ?? 0) > 0 && !spec.noInv)
+    registerInv(name, {
+      size: spec.slots,
+      // what a tap with this in hand does instead of opening the screen
+      claims: (player, h, block) => (h ? (!!spec.tanks && (!!FILLED[h.typeId] || h.typeId === "minecraft:bucket" || h.typeId === "minecraft:glass_bottle")) || !!spec.claimsItem?.(h) || (!!spec.accepts && spec.inputs.some((i) => spec.accepts(spec.data(block), { id: h.typeId, n: 1 }, i))) : !!spec.claimsEmpty?.(player)),
+      use: (player, block) => interact(spec, { block, player, viaEntity: true }),
+      form: spec.noForm ? undefined : (player, block) => {
+        const d = spec.data(block);
+        slotsIn(spec, block, d);
+        openForm(spec, block, player);
+      },
+    });
   onBlock(name, {
     tick: (ctx) => tick(spec, ctx),
     interact: (ctx) => interact(spec, ctx),
+    placedBy: ({ block, player }) => {
+      const kept = carried.get(player.id);
+      carried.delete(player.id);
+      if (!spec.keepsContents || !kept || kept.t !== system.currentTick && kept.t !== system.currentTick - 1) return;
+      const d = spec.data(block);
+      if (kept.tanks) d.tanks = kept.tanks;
+      if (kept.fe) d.fe = kept.fe;
+      store.save(block);
+    },
     broken: (ctx) => {
       const d = store.getKey(store.keyOf(ctx.block));
-      if (d) {
-        dropSlots(ctx.dim ?? ctx.block.dimension, ctx.block.location, d.slots);
-        spec.broken?.({ ...ctx, d, spec });
+      if (spec.keepsContents && !(ctx.player && isCreative(ctx.player) && !Object.values(d?.tanks ?? {}).some((t) => t.n))) {
+        const s = new ItemStack(typeId, 1);
+        if (d && Object.values(d.tanks ?? {}).some((t) => t.n)) {
+          s.setDynamicProperty("contents", JSON.stringify({ tanks: d.tanks, fe: d.fe }));
+          s.setLore(Object.values(d.tanks).filter((t) => t.n).map((t) => `§7${t.f} ${t.n} mB`));
+        }
+        (ctx.dim ?? ctx.block.dimension).spawnItem(s, ctx.block.center());
       }
+      if (invs.has(typeId)) dropAndRemove(ctx.block, ctx.dim);
+      else if (d) dropSlots(ctx.dim ?? ctx.block.dimension, ctx.block.location, d.slots);
+      if (d) spec.broken?.({ ...ctx, d, spec });
     },
-    place: (ctx) => spec.place?.({ ...ctx, d: spec.data(ctx.block), spec }),
+    place: (ctx) => {
+      if (invs.has(typeId)) entityOf(ctx.block);
+      spec.place?.({ ...ctx, d: spec.data(ctx.block), spec });
+    },
     randomTick: spec.randomTick,
   });
   return spec;
@@ -75,6 +149,16 @@ export function defineMachine(name, spec) {
 
 function tick(spec, { block }) {
   const d = spec.data(block);
+  slotsIn(spec, block, d);
+  if (spec.accepts)
+    for (const i of spec.inputs) {
+      const p = d.slots[i];
+      if (p && !spec.accepts(d, p, i)) {
+        deliverBelow(block, p, { dir: "up" });
+        d.slots[i] = null;
+      }
+    }
+  for (const i of spec.outputs) if (d.slots[i] && !d.slots[i].id) d.slots[i] = null;
   const ctx = { block, d, spec, dt: TICK };
   // hoppers feed the inputs
   if (spec.inputs.length && spec.hopperIn !== false) {
@@ -98,6 +182,17 @@ function tick(spec, { block }) {
   if (spec.energy?.out && d.fe > 0) d.fe -= energy.push(block, Math.min(d.fe, spec.energy.out * TICK));
   const running = status === "running";
   setStates(block, { running, lit: running, powered: running });
+  slotsOut(spec, block, d);
+  if (invs.has(spec.typeId)) {
+    // the screen's title and the name shown when looked at: what it is doing
+    const e = entityOf(block);
+    let t = title(spec.typeId) + "  " + (STATUS_JA[status] ?? "");
+    if (spec.energy) t += `  ⚡${energy.fmt(d.fe ?? 0)}/${energy.fmt(spec.energy.cap)}`;
+    const max = typeof spec.progressMax === "function" ? spec.progressMax(ctx) : spec.progressMax;
+    if (max && d.progress) t += `  ${Math.floor((100 * d.progress) / max)}%`;
+    for (const [k, tank] of Object.entries(d.tanks ?? {})) if (tank.n) t += `  ${tank.n}mB`;
+    if (e && e.nameTag !== t) e.nameTag = t;
+  }
   store.save(block);
 }
 
@@ -105,6 +200,17 @@ function tick(spec, { block }) {
 async function interact(spec, ctx) {
   const { block, player } = ctx;
   const d = spec.data(block);
+  slotsIn(spec, block, d);
+  try {
+    await interactInner(spec, ctx, d);
+  } finally {
+    slotsOut(spec, block, d);
+  }
+}
+
+async function interactInner(spec, ctx, d) {
+  const { block, player } = ctx;
+  if (invs.has(spec.typeId) && !ctx.viaEntity) entityOf(block); // a block reached before its entity was made
   const h = held(player);
   if (spec.interact && spec.interact({ ...ctx, d, spec }) === true) {
     store.save(block);
@@ -149,8 +255,7 @@ function pourContainer(spec, d, player, h) {
       player.dimension.playSound("bucket.empty_water", player.location);
       return true;
     }
-    player.sendMessage({ rawtext: [tr("nookworks.bedrock.not_accepted")] });
-    return true;
+    return false;
   }
   if (h.typeId === "minecraft:bucket" || h.typeId === "minecraft:glass_bottle") {
     for (const [t, ts] of Object.entries(spec.tanks)) {
@@ -241,7 +346,10 @@ export async function openForm(spec, block, player) {
   if (res.canceled || res.selection === undefined) return;
   const a = actions[res.selection];
   if (a) {
+    if (!block.isValid || block.typeId !== spec.typeId || store.getKey(store.keyOf(block)) !== d) return;
+    slotsIn(spec, block, d);
     safe(a, "form action")();
+    slotsOut(spec, block, d);
     store.save(block);
   }
 }
@@ -278,4 +386,11 @@ export function spaceFor(d, slot, p) {
 
 export function putOut(d, slots, p) {
   return addToSlots(d.slots, [].concat(slots), p);
+}
+
+/** Would all of outs fit into these slots? (tried on a copy) */
+export function fits(d, slots, outs) {
+  const copy = d.slots.map((s) => (s ? { ...s } : null));
+  for (const o of outs) if (o && o.n > 0 && addToSlots(copy, [].concat(slots), o) > 0) return false;
+  return true;
 }
