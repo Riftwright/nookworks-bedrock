@@ -1,0 +1,9 @@
+.cache/
+.bds/
+.bds_dl/
+packs/
+dist/
+release/
+__pycache__/
+*.pyc
+node_modules/

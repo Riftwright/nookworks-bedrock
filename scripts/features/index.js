@@ -1,0 +1,25 @@
+// One import per feature module.
+import "./settings.js";
+import "./connect.js";
+import "./vanilla_like.js";
+import "./seats.js";
+import "./chain_breaking.js";
+import "./machines.js";
+import "./storage.js";
+import "./logistics.js";
+import "./drops.js";
+import "./crops.js";
+import "./kitchen.js";
+import "./decor.js";
+import "./tools.js";
+import "./tanks.js";
+import "./connections.js";
+import "./mercury.js";
+import "./posters.js";
+import "./rope.js";
+import "./drive.js";
+import "./workshop2.js";
+import "./redstone.js";
+import "./travel.js";
+import "./items2.js";
+import "./decor2.js";

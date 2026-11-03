@@ -1,0 +1,32 @@
+name: 要望 / Request
+description: ほしい機能や直してほしいところ / Something you would like
+labels: [enhancement]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: 端末 / Device
+  - type: input
+    id: mc_version
+    attributes:
+      label: Minecraft のバージョン / Minecraft version
+  - type: input
+    id: addon_version
+    attributes:
+      label: アドオンのバージョン / Add-on version
+  - type: textarea
+    id: request
+    attributes:
+      label: 要望 / Request
+      description: どうなってほしいか / What you would like, and why
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 手順 / Steps
+      description: 関係する操作があれば / If it concerns something you do in the game
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: スクリーンショット / Screenshots

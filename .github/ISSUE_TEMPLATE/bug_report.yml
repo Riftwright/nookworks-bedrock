@@ -1,0 +1,44 @@
+name: バグ報告 / Bug report
+description: うまく動かないところを教えてください / Something does not work
+labels: [bug]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: 端末 / Device
+      description: 例：Windows 11、Switch（Windows のワールドに LAN 参加）/ e.g. Windows 11, Switch (LAN into a Windows world)
+    validations:
+      required: true
+  - type: input
+    id: mc_version
+    attributes:
+      label: Minecraft のバージョン / Minecraft version
+      placeholder: "1.26.60"
+    validations:
+      required: true
+  - type: input
+    id: addon_version
+    attributes:
+      label: アドオンのバージョン / Add-on version
+      placeholder: "1.0.1"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 手順 / Steps
+      description: 何をしたら起きたか / What you did
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 起きたこと / What happened
+      description: 期待していたことも書いてください / And what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: スクリーンショット / Screenshots
+      description: あれば貼ってください / Paste them here if you have any

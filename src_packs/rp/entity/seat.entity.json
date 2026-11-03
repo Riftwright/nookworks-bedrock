@@ -1,0 +1,12 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "nookworks:seat",
+      "materials": { "default": "entity_alphatest" },
+      "textures": { "default": "textures/nookworks/misc/blank" },
+      "geometry": { "default": "geometry.nookworks.empty" },
+      "render_controllers": ["controller.render.default"]
+    }
+  }
+}

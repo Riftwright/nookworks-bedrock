@@ -1,0 +1,21 @@
+{
+  "format_version": "1.21.90",
+  "minecraft:entity": {
+    "description": { "identifier": "nookworks:seat", "is_spawnable": false, "is_summonable": true },
+    "components": {
+      "minecraft:collision_box": { "width": 0.01, "height": 0.01 },
+      "minecraft:damage_sensor": { "triggers": [{ "cause": "all", "deals_damage": "no" }] },
+      "minecraft:health": { "value": 1, "max": 1 },
+      "minecraft:physics": { "has_gravity": false, "has_collision": false },
+      "minecraft:pushable": { "is_pushable": false, "is_pushable_by_piston": false },
+      "minecraft:knockback_resistance": { "value": 1 },
+      "minecraft:rideable": {
+        "seat_count": 1, "pull_in_entities": false, "interact_text": "action.interact.ride.horse",
+        "family_types": ["player"],
+        "seats": [{ "position": [0, 0, 0], "lock_rider_rotation": 0 }]
+      },
+      "minecraft:type_family": { "family": ["nookworks_seat", "inanimate"] },
+      "minecraft:persistent": {}
+    }
+  }
+}

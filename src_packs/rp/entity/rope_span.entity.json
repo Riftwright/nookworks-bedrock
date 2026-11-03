@@ -1,0 +1,14 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "nookworks:rope_span",
+      "materials": { "default": "entity_alphatest" },
+      "textures": { "default": "textures/nookworks/entity/thin_rope_span" },
+      "geometry": { "default": "geometry.nookworks.span" },
+      "animations": { "stretch": "animation.nookworks.span" },
+      "scripts": { "animate": ["stretch"] },
+      "render_controllers": ["controller.render.default"]
+    }
+  }
+}
